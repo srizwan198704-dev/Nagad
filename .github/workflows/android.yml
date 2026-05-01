@@ -11,7 +11,7 @@ jobs:
     name: Generate and Release APK
     runs-on: ubuntu-latest
     permissions:
-      contents: write # রিলিজ তৈরি করার জন্য এই পারমিশনটি জরুরি
+      contents: write # রিলিজ তৈরি করার জন্য প্রয়োজনীয় পারমিশন
 
     steps:
       - name: Checkout Code
@@ -24,25 +24,24 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Setup Gradle
+      # নির্দিষ্ট গ্র্যাডল ভার্সন সেটআপ (যা রানার মেশিনে সরাসরি গ্র্যাডল কমান্ড এনাবেল করবে)
+      - name: Setup Gradle 8.5
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.5
 
-      - name: Grant Execute Permission
-        run: chmod +x gradlew
-
+      # 'gradlew' এর বদলে সরাসরি 'gradle' ব্যবহার করা হয়েছে যাতে ফাইল নট ফাউন্ড এরর না আসে
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug
 
-      # সরাসরি APK ফাইলটি রিলিজ সেকশনে আপলোড করার স্টেপ
+      # সরাসরি রিলিজ সেকশনে APK ফাইলটি পুশ করা
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/debug/app-debug.apk
           tag_name: build-${{ github.run_number }}
-          name: App Build v${{ github.run_number }}
-          body: "সরাসরি নিচের লিঙ্ক থেকে APK ডাউনলোড করুন।"
+          name: Nagad App v${{ github.run_number }}
+          body: "ডাউনলোড করতে নিচের Assets সেকশন থেকে app-debug.apk ফাইলে ক্লিক করুন।"
           draft: false
           prerelease: false
         env:
