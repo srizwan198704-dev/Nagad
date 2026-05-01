@@ -32,8 +32,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.PointerInputScope
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
@@ -171,6 +169,8 @@ fun FileManagerScreen() {
             )
             LazyColumn {
                 items(sortedFiles) { file ->
+                    var isLongPressed by remember { mutableStateOf(false) }
+                    
                     ListItem(
                         headlineContent = { Text(file.name) },
                         leadingContent = {
@@ -196,35 +196,36 @@ fun FileManagerScreen() {
                             }
                         },
                         modifier = Modifier
-                            .pointerInput(file) {
-                                detectLongPressAndPopup(file) { selectedFile ->
-                                    if (selectedFile.extension.lowercase() in listOf("mp4", "mkv", "3gp")) {
-                                        popupVideoFile = selectedFile
+                            .combinedClickable(
+                                onClick = {
+                                    if (file.isDirectory) {
+                                        currentPath = file
+                                    } else {
+                                        val ext = file.extension.lowercase()
+                                        when {
+                                            ext == "apk" -> installApk(context, file)
+                                            ext in listOf("mp4", "mkv", "3gp") -> { 
+                                                viewingFile = file
+                                                fileType = "video"
+                                                activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+                                            }
+                                            ext in listOf("jpg", "jpeg", "png", "webp") -> { viewingFile = file; fileType = "image" }
+                                            ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> { viewingFile = file; fileType = "text" }
+                                            else -> Toast.makeText(context, "Format not supported internally", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                onLongClick = {
+                                    if (file.extension.lowercase() in listOf("mp4", "mkv", "3gp")) {
+                                        popupVideoFile = file
                                         showVideoPopup = true
                                         activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
                                     } else {
-                                        showOptionsPopup = selectedFile
+                                        showOptionsPopup = file
                                     }
+                                    true
                                 }
-                            }
-                            .clickable {
-                                if (file.isDirectory) {
-                                    currentPath = file
-                                } else {
-                                    val ext = file.extension.lowercase()
-                                    when {
-                                        ext == "apk" -> installApk(context, file)
-                                        ext in listOf("mp4", "mkv", "3gp") -> { 
-                                            viewingFile = file
-                                            fileType = "video"
-                                            activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
-                                        }
-                                        ext in listOf("jpg", "jpeg", "png", "webp") -> { viewingFile = file; fileType = "image" }
-                                        ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> { viewingFile = file; fileType = "text" }
-                                        else -> Toast.makeText(context, "Format not supported internally", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            }
+                            )
                     )
                 }
             }
@@ -260,23 +261,6 @@ fun FileManagerScreen() {
                 }
             )
         }
-    }
-}
-
-suspend fun detectLongPressAndPopup(
-    file: File,
-    onLongPress: (File) -> Unit
-) {
-    var isLongPressHandled = false
-    var startTime = System.currentTimeMillis()
-    
-    while (true) {
-        if (System.currentTimeMillis() - startTime >= 500 && !isLongPressHandled) {
-            isLongPressHandled = true
-            onLongPress(file)
-            break
-        }
-        delay(50)
     }
 }
 
@@ -615,6 +599,7 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                         onLongClickListener?.invoke(extra)
                     }
                 }
+                else -> false
             }
             true
         }
