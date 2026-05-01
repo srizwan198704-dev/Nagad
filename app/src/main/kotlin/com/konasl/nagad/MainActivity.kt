@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
@@ -54,12 +55,10 @@ class MainActivity : ComponentActivity() {
         }
     }
     
-    // Orientation পরিবর্তনের ফাংশন
     fun setOrientation(orientation: Int) {
         requestedOrientation = orientation
     }
     
-    // নরমাল Orientation এ ফিরিয়ে আনা
     fun resetOrientation() {
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
@@ -93,7 +92,6 @@ fun MainApp() {
     }
 }
 
-// --- ফাইল ম্যানেজার লজিক ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileManagerScreen() {
@@ -102,11 +100,8 @@ fun FileManagerScreen() {
     var currentPath by remember { mutableStateOf(Environment.getExternalStorageDirectory()) }
     val files = currentPath.listFiles()?.sortedByDescending { it.isDirectory } ?: emptyList()
     
-    // ভিউয়ার স্টেট
     var viewingFile by remember { mutableStateOf<File?>(null) }
     var fileType by remember { mutableStateOf("") }
-    
-    // পপআপ স্টেট
     var showOptionsPopup by remember { mutableStateOf<File?>(null) }
 
     if (viewingFile != null) {
@@ -167,112 +162,38 @@ fun FileManagerScreen() {
             }
         }
         
-        // পপআপ মেনু
         if (showOptionsPopup != null) {
-            PopupMenu(
-                file = showOptionsPopup!!,
-                onDismiss = { showOptionsPopup = null },
-                onDelete = {
-                    showOptionsPopup?.deleteRecursively()
-                    Toast.makeText(context, "Deleted: ${showOptionsPopup?.name}", Toast.LENGTH_SHORT).show()
-                    showOptionsPopup = null
+            AlertDialog(
+                onDismissRequest = { showOptionsPopup = null },
+                title = { Text(showOptionsPopup?.name ?: "File") },
+                text = { 
+                    Column {
+                        Text("Size: ${formatFileSize(showOptionsPopup?.length() ?: 0)}")
+                        Text("Type: ${showOptionsPopup?.extension?.ifEmpty { "Folder" }}")
+                    }
                 },
-                onShare = {
-                    shareFile(context, showOptionsPopup!!)
-                    showOptionsPopup = null
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showOptionsPopup?.deleteRecursively()
+                            Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                            showOptionsPopup = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete")
+                    }
                 },
-                onInfo = {
-                    showFileInfo(context, showOptionsPopup!!)
-                    showOptionsPopup = null
+                dismissButton = {
+                    TextButton(onClick = { showOptionsPopup = null }) {
+                        Text("Cancel")
+                    }
                 }
             )
         }
     }
 }
 
-// পপআপ মেনু কম্পোজেবল
-@Composable
-fun PopupMenu(
-    file: File,
-    onDismiss: () -> Unit,
-    onDelete: () -> Unit,
-    onShare: () -> Unit,
-    onInfo: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(file.name) },
-        text = { 
-            Column {
-                Text("Size: ${formatFileSize(file.length())}")
-                Text("Type: ${file.extension.ifEmpty { "Folder" }}")
-                Text("Modified: ${file.lastModified()?.let { android.text.format.DateFormat.format("yyyy-MM-dd HH:mm:ss", it) }}")
-            }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onInfo) {
-                    Icon(Icons.Default.Info, null)
-                    Text("Info")
-                }
-                TextButton(onClick = onShare) {
-                    Icon(Icons.Default.Share, null)
-                    Text("Share")
-                }
-                Button(
-                    onClick = onDelete,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Icon(Icons.Default.Delete, null)
-                    Text("Delete")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-// ফাইল শেয়ার ফাংশন
-fun shareFile(context: android.content.Context, file: File) {
-    try {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = when (file.extension.lowercase()) {
-                "mp4", "mkv", "3gp" -> "video/*"
-                "jpg", "jpeg", "png" -> "image/*"
-                "txt", "json" -> "text/plain"
-                "apk" -> "application/vnd.android.package-archive"
-                else -> "*/*"
-            }
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(Intent.createChooser(intent, "Share ${file.name}"))
-    } catch (e: Exception) {
-        Toast.makeText(context, "Error sharing file: ${e.message}", Toast.LENGTH_SHORT).show()
-    }
-}
-
-// ফাইল ইনফো দেখানো
-fun showFileInfo(context: android.content.Context, file: File) {
-    val info = buildString {
-        append("Name: ${file.name}\n")
-        append("Size: ${formatFileSize(file.length())}\n")
-        append("Path: ${file.absolutePath}\n")
-        append("Type: ${if (file.isDirectory) "Directory" else "File"}\n")
-        append("Extension: ${file.extension}\n")
-        append("Readable: ${file.canRead()}\n")
-        append("Writable: ${file.canWrite()}\n")
-        append("Last Modified: ${android.text.format.DateFormat.format("yyyy-MM-dd HH:mm:ss", file.lastModified())}")
-    }
-    Toast.makeText(context, info, Toast.LENGTH_LONG).show()
-}
-
-// ফাইল সাইজ ফরম্যাটিং
 fun formatFileSize(size: Long): String {
     return when {
         size < 1024 -> "$size B"
@@ -282,7 +203,6 @@ fun formatFileSize(size: Long): String {
     }
 }
 
-// --- ইমেজ লোডার কম্পোজেবল ---
 @Composable
 fun LoadImageFromFile(file: File, modifier: Modifier = Modifier) {
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -310,7 +230,6 @@ fun LoadImageFromFile(file: File, modifier: Modifier = Modifier) {
     }
 }
 
-// --- অল-ইন-ওয়ান ইন্টারনাল প্লেয়ার/ভিউয়ার ---
 @Composable
 fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -319,7 +238,6 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
     
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Column {
-            // কন্ট্রোল বার
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -335,21 +253,19 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                 }
                 
                 if (type == "video") {
-                    Row {
-                        IconButton(onClick = {
-                            showFullscreen = !showFullscreen
-                            if (showFullscreen) {
-                                activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
-                            } else {
-                                activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-                            }
-                        }) { 
-                            Icon(
-                                if (showFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                null,
-                                tint = Color.White
-                            ) 
+                    IconButton(onClick = {
+                        showFullscreen = !showFullscreen
+                        if (showFullscreen) {
+                            activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+                        } else {
+                            activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
                         }
+                    }) { 
+                        Icon(
+                            if (showFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            null,
+                            tint = Color.White
+                        ) 
                     }
                 }
             }
@@ -364,29 +280,17 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                                 mc.setAnchorView(this)
                                 setMediaController(mc)
                                 start()
-                                
-                                setOnCompletionListener {
-                                    Toast.makeText(ctx, "Video finished", Toast.LENGTH_SHORT).show()
-                                }
                             }
                         },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .weight(1f)
+                        modifier = Modifier.fillMaxSize().weight(1f)
                     )
                 }
                 "image" -> {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
+                        modifier = Modifier.fillMaxSize().weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
-                        LoadImageFromFile(
-                            file = file,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        LoadImageFromFile(file = file, modifier = Modifier.fillMaxSize())
                     }
                 }
                 "text" -> {
@@ -425,61 +329,178 @@ fun installApk(context: android.content.Context, file: File) {
     }
 }
 
-// --- ট্যাব ব্রাউজার লজিক ---
 @Composable
 fun TabbedBrowserScreen() {
     var tabs by remember { mutableStateOf(mutableListOf("https://www.google.com")) }
     var activeTabIndex by remember { mutableIntStateOf(0) }
     var showTabList by remember { mutableStateOf(false) }
+    var showBrowserMenu by remember { mutableStateOf(false) }
+    var currentUrl by remember { mutableStateOf(TextFieldValue(tabs[activeTabIndex])) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
     val context = LocalContext.current
 
     Column {
-        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(4.dp)) {
-            Button(onClick = { showTabList = true }, Modifier.weight(1f)) { 
-                Text("Tabs (${tabs.size})") 
+        // URL এড্রেসবার
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // URL ইনপুট ফিল্ড
+                OutlinedTextField(
+                    value = currentUrl,
+                    onValueChange = { currentUrl = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Enter URL (e.g., google.com)") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                    )
+                )
+                
+                Spacer(modifier = Modifier.width(8.dp))
+                
+                // GO বাটন
+                IconButton(
+                    onClick = {
+                        var url = currentUrl.text.trim()
+                        if (url.isNotEmpty()) {
+                            // URL ভ্যালিডেট করা
+                            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                                url = if (url.contains(".")) {
+                                    "https://$url"
+                                } else {
+                                    "https://$url.com"
+                                }
+                            }
+                            currentUrl = TextFieldValue(url)
+                            tabs = tabs.toMutableList().apply { 
+                                this[activeTabIndex] = url 
+                            }
+                            webViewRef?.loadUrl(url)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(24.dp)
+                        )
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "Go",
+                        tint = Color.White
+                    )
+                }
             }
-            Spacer(Modifier.width(4.dp))
+        }
+        
+        // ব্রাউজার কন্ট্রোল বার
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            // ব্যাক বাটন
+            IconButton(onClick = {
+                webViewRef?.goBack()
+            }) {
+                Icon(Icons.Default.ArrowBack, "Back")
+            }
+            
+            // ফরওয়ার্ড বাটন
+            IconButton(onClick = {
+                webViewRef?.goForward()
+            }) {
+                Icon(Icons.Default.ArrowForward, "Forward")
+            }
+            
+            // রিফ্রেশ বাটন
+            IconButton(onClick = {
+                webViewRef?.reload()
+            }) {
+                Icon(Icons.Default.Refresh, "Refresh")
+            }
+            
+            // হোম বাটন
+            IconButton(onClick = {
+                val homeUrl = "https://www.google.com"
+                currentUrl = TextFieldValue(homeUrl)
+                tabs = tabs.toMutableList().apply { 
+                    this[activeTabIndex] = homeUrl 
+                }
+                webViewRef?.loadUrl(homeUrl)
+            }) {
+                Icon(Icons.Default.Home, "Home")
+            }
+            
+            // ট্যাব বাটন
+            IconButton(onClick = { showTabList = true }) {
+                Icon(Icons.Default.Tab, "Tabs (${tabs.size})")
+            }
+            
+            // নিউ ট্যাব বাটন
             IconButton(onClick = { 
-                tabs = tabs.toMutableList().apply { add("https://www.google.com") }
-                activeTabIndex = tabs.size - 1 
+                val newUrl = "https://www.google.com"
+                tabs = tabs.toMutableList().apply { add(newUrl) }
+                activeTabIndex = tabs.size - 1
+                currentUrl = TextFieldValue(newUrl)
+                webViewRef?.loadUrl(newUrl)
             }) {
                 Icon(Icons.Default.Add, "New Tab")
             }
+            
+            // মেনু বাটন
+            IconButton(onClick = { showBrowserMenu = true }) {
+                Icon(Icons.Default.MoreVert, "Menu")
+            }
         }
 
+        // ট্যাব লিস্ট ডায়ালগ
         if (showTabList) {
             AlertDialog(
                 onDismissRequest = { showTabList = false },
-                confirmButton = { 
-                    TextButton(onClick = { showTabList = false }) { 
-                        Text("Close") 
-                    } 
-                },
                 title = { Text("Open Tabs") },
                 text = {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 400.dp)
-                    ) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                         itemsIndexed(tabs) { index, url ->
                             ListItem(
                                 headlineContent = { 
-                                    Text(
-                                        url.take(50) + if (url.length > 50) "..." else "",
-                                        maxLines = 1
-                                    ) 
+                                    Text(url.take(50) + if (url.length > 50) "..." else "", maxLines = 1) 
+                                },
+                                supportingContent = {
+                                    if (index == activeTabIndex) {
+                                        Text("Active", color = MaterialTheme.colorScheme.primary)
+                                    }
                                 },
                                 modifier = Modifier.clickable { 
                                     activeTabIndex = index
+                                    currentUrl = TextFieldValue(tabs[index])
+                                    webViewRef?.loadUrl(tabs[index])
                                     showTabList = false
                                 },
                                 trailingContent = {
                                     if (tabs.size > 1) {
                                         IconButton(onClick = { 
                                             tabs = tabs.toMutableList().apply { removeAt(index) }
-                                            if (activeTabIndex >= tabs.size) {
-                                                activeTabIndex = tabs.size - 1
-                                            }
+                                            if (activeTabIndex >= tabs.size) activeTabIndex = tabs.size - 1
                                             if (activeTabIndex < 0) activeTabIndex = 0
+                                            if (tabs.isNotEmpty()) {
+                                                currentUrl = TextFieldValue(tabs[activeTabIndex])
+                                                webViewRef?.loadUrl(tabs[activeTabIndex])
+                                            }
                                         }) { 
                                             Icon(Icons.Default.Close, null) 
                                         }
@@ -488,10 +509,53 @@ fun TabbedBrowserScreen() {
                             )
                         }
                     }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showTabList = false }) { Text("Close") }
+                }
+            )
+        }
+        
+        // ব্রাউজার মেনু ডায়ালগ
+        if (showBrowserMenu) {
+            AlertDialog(
+                onDismissRequest = { showBrowserMenu = false },
+                title = { Text("Browser Options") },
+                text = {
+                    Column {
+                        TextButton(onClick = {
+                            val currentPageUrl = webViewRef?.url ?: tabs[activeTabIndex]
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, currentPageUrl)
+                            }
+                            context.startActivity(Intent.createChooser(shareIntent, "Share URL"))
+                            showBrowserMenu = false
+                        }) {
+                            Text("📤 Share URL")
+                        }
+                        TextButton(onClick = {
+                            webViewRef?.reload()
+                            showBrowserMenu = false
+                            Toast.makeText(context, "Page Refreshed", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("🔄 Refresh")
+                        }
+                        TextButton(onClick = {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webViewRef?.url ?: tabs[activeTabIndex])))
+                            showBrowserMenu = false
+                        }) {
+                            Text("🌐 Open in External Browser")
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showBrowserMenu = false }) { Text("Close") }
                 }
             )
         }
 
+        // ওয়েবভিউ
         SecureWebView(
             url = tabs.getOrElse(activeTabIndex) { "https://www.google.com" },
             onUrlChange = { newUrl ->
@@ -499,7 +563,11 @@ fun TabbedBrowserScreen() {
                     tabs = tabs.toMutableList().apply { 
                         this[activeTabIndex] = newUrl 
                     }
+                    currentUrl = TextFieldValue(newUrl)
                 }
+            },
+            onWebViewReady = { webView ->
+                webViewRef = webView
             }
         )
     }
@@ -507,124 +575,57 @@ fun TabbedBrowserScreen() {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun SecureWebView(url: String, onUrlChange: (String) -> Unit) {
+fun SecureWebView(url: String, onUrlChange: (String) -> Unit, onWebViewReady: (WebView) -> Unit) {
     val context = LocalContext.current
-    var showPopupMenu by remember { mutableStateOf(false) }
     
-    Box(modifier = Modifier.fillMaxSize()) {
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        allowFileAccess = true
-                        allowContentAccess = true
-                        setSupportZoom(true)
-                        builtInZoomControls = true
-                        displayZoomControls = false
-                        loadWithOverviewMode = true
-                        useWideViewPort = true
+    AndroidView(
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    allowFileAccess = true
+                    allowContentAccess = true
+                    setSupportZoom(true)
+                    builtInZoomControls = true
+                    displayZoomControls = false
+                    loadWithOverviewMode = true
+                    useWideViewPort = true
+                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        url?.let { onUrlChange(it) }
                     }
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            url?.let { onUrlChange(it) }
-                        }
-                        
-                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                            request?.url?.let { uri ->
-                                if (uri.toString().startsWith("http")) {
-                                    view?.loadUrl(uri.toString())
-                                    return true
-                                }
+                    
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        request?.url?.let { uri ->
+                            val urlString = uri.toString()
+                            if (urlString.startsWith("http") || urlString.startsWith("https")) {
+                                view?.loadUrl(urlString)
+                                return true
                             }
-                            return false
                         }
-                    }
-                    webChromeClient = object : WebChromeClient() {
-                        override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-                            AlertDialog.Builder(ctx)
-                                .setTitle("Alert")
-                                .setMessage(message)
-                                .setPositiveButton("OK") { _, _ -> result?.confirm() }
-                                .show()
-                            return true
-                        }
-                        
-                        override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-                            AlertDialog.Builder(ctx)
-                                .setTitle("Confirm")
-                                .setMessage(message)
-                                .setPositiveButton("Yes") { _, _ -> result?.confirm() }
-                                .setNegativeButton("No") { _, _ -> result?.cancel() }
-                                .show()
-                            return true
-                        }
-                    }
-                    setDownloadListener { downloadUrl, _, _, _, _ ->
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Cannot download: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    loadUrl(url)
-                }
-            },
-            update = { webView ->
-                if (webView.url != url) {
-                    webView.loadUrl(url)
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-        
-        // ব্রাউজারের জন্য পপআপ মেনু
-        FloatingActionButton(
-            onClick = { showPopupMenu = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp),
-            containerColor = MaterialTheme.colorScheme.primary
-        ) {
-            Icon(Icons.Default.MoreVert, "Menu")
-        }
-        
-        if (showPopupMenu) {
-            AlertDialog(
-                onDismissRequest = { showPopupMenu = false },
-                title = { Text("Browser Options") },
-                text = {
-                    Column {
-                        TextButton(onClick = {
-                            val webView = (LocalContext.current as? android.app.Activity)?.findViewById<WebView>(android.R.id.content)
-                            webView?.reload()
-                            showPopupMenu = false
-                        }) {
-                            Text("🔄 Refresh")
-                        }
-                        TextButton(onClick = {
-                            val webView = (LocalContext.current as? android.app.Activity)?.findViewById<WebView>(android.R.id.content)
-                            webView?.goBack()
-                            showPopupMenu = false
-                        }) {
-                            Text("⬅️ Back")
-                        }
-                        TextButton(onClick = {
-                            val webView = (LocalContext.current as? android.app.Activity)?.findViewById<WebView>(android.R.id.content)
-                            webView?.goForward()
-                            showPopupMenu = false
-                        }) {
-                            Text("➡️ Forward")
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showPopupMenu = false }) {
-                        Text("Close")
+                        return false
                     }
                 }
-            )
-        }
-    }
+                webChromeClient = WebChromeClient()
+                setDownloadListener { downloadUrl, _, _, _, _ ->
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Cannot download: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                loadUrl(url)
+                onWebViewReady(this)
+            }
+        },
+        update = { webView ->
+            if (webView.url != url) {
+                webView.loadUrl(url)
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }
