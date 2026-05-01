@@ -31,7 +31,6 @@ android {
     kotlinOptions { jvmTarget = "1.8" }
     buildFeatures { compose = true }
     composeOptions { 
-        // Kotlin 1.9.0 এর সাথে এটি সামঞ্জস্যপূর্ণ
         kotlinCompilerExtensionVersion = "1.5.1" 
     }
 }
@@ -45,4 +44,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.7")
+    
+    // Coil for image loading
+    implementation("io.coil-kt:coil-compose:2.5.0")
 }
