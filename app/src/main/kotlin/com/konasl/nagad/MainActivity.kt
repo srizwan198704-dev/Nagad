@@ -62,11 +62,11 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
         }
     }
-    
+
     fun setOrientation(orientation: Int) {
         requestedOrientation = orientation
     }
-    
+
     fun resetOrientation() {
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
@@ -106,7 +106,7 @@ fun FileManagerScreen() {
     val context = LocalContext.current
     val activity = context as? MainActivity
     var currentPath by remember { mutableStateOf(Environment.getExternalStorageDirectory()) }
-    
+
     val sortedFiles = remember(currentPath) {
         currentPath.listFiles()?.let { files ->
             files.sortedWith(compareBy(
@@ -115,7 +115,7 @@ fun FileManagerScreen() {
             ))
         } ?: emptyList()
     }
-    
+
     var viewingFile by remember { mutableStateOf<File?>(null) }
     var fileType by remember { mutableStateOf("") }
     var showOptionsPopup by remember { mutableStateOf<File?>(null) }
@@ -123,23 +123,25 @@ fun FileManagerScreen() {
     var popupVideoFile by remember { mutableStateOf<File?>(null) }
 
     if (viewingFile != null && !showVideoPopup) {
-        InternalPlayer(viewingFile!!, fileType) { 
+        InternalPlayer(viewingFile!!, fileType) {
             viewingFile = null
             activity?.resetOrientation()
         }
     } else if (showVideoPopup && popupVideoFile != null) {
         AlertDialog(
-            onDismissRequest = { 
+            onDismissRequest = {
                 showVideoPopup = false
                 popupVideoFile = null
                 activity?.resetOrientation()
             },
             modifier = Modifier.fillMaxSize()
         ) {
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            Box(modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)) {
                 VideoPopupPlayer(
                     file = popupVideoFile!!,
-                    onClose = { 
+                    onClose = {
                         showVideoPopup = false
                         popupVideoFile = null
                         activity?.resetOrientation()
@@ -201,13 +203,19 @@ fun FileManagerScreen() {
                                         val ext = file.extension.lowercase()
                                         when {
                                             ext == "apk" -> installApk(context, file)
-                                            ext in listOf("mp4", "mkv", "3gp") -> { 
+                                            ext in listOf("mp4", "mkv", "3gp") -> {
                                                 viewingFile = file
                                                 fileType = "video"
                                                 activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
                                             }
-                                            ext in listOf("jpg", "jpeg", "png", "webp") -> { viewingFile = file; fileType = "image" }
-                                            ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> { viewingFile = file; fileType = "text" }
+                                            ext in listOf("jpg", "jpeg", "png", "webp") -> {
+                                                viewingFile = file
+                                                fileType = "image"
+                                            }
+                                            ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> {
+                                                viewingFile = file
+                                                fileType = "text"
+                                            }
                                             else -> Toast.makeText(context, "Format not supported internally", Toast.LENGTH_SHORT).show()
                                         }
                                     }
@@ -227,12 +235,12 @@ fun FileManagerScreen() {
                 }
             }
         }
-        
+
         if (showOptionsPopup != null) {
             AlertDialog(
                 onDismissRequest = { showOptionsPopup = null },
                 title = { Text(showOptionsPopup?.name ?: "File") },
-                text = { 
+                text = {
                     Column {
                         Text("Size: ${formatFileSize(showOptionsPopup?.length() ?: 0)}")
                         Text("Type: ${showOptionsPopup?.extension?.ifEmpty { "Folder" }}")
@@ -263,7 +271,9 @@ fun FileManagerScreen() {
 
 @Composable
 fun VideoPopupPlayer(file: File, onClose: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 VideoView(ctx).apply {
@@ -276,7 +286,7 @@ fun VideoPopupPlayer(file: File, onClose: () -> Unit) {
             },
             modifier = Modifier.fillMaxSize()
         )
-        
+
         IconButton(
             onClick = onClose,
             modifier = Modifier
@@ -301,7 +311,7 @@ fun formatFileSize(size: Long): String {
 fun LoadImageFromFile(file: File, modifier: Modifier = Modifier) {
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     val scope = rememberCoroutineScope()
-    
+
     LaunchedEffect(file) {
         scope.launch {
             withContext(Dispatchers.IO) {
@@ -309,7 +319,7 @@ fun LoadImageFromFile(file: File, modifier: Modifier = Modifier) {
             }
         }
     }
-    
+
     if (bitmap != null) {
         Image(
             bitmap = bitmap!!.asImageBitmap(),
@@ -329,8 +339,12 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val activity = context as? MainActivity
     var showFullscreen by remember { mutableStateOf(false) }
-    
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
         Column {
             Row(
                 modifier = Modifier
@@ -339,13 +353,13 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                     .padding(8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                IconButton(onClick = { 
+                IconButton(onClick = {
                     onBack()
                     activity?.resetOrientation()
-                }) { 
-                    Icon(Icons.Default.Close, null, tint = Color.White) 
+                }) {
+                    Icon(Icons.Default.Close, null, tint = Color.White)
                 }
-                
+
                 if (type == "video") {
                     IconButton(onClick = {
                         showFullscreen = !showFullscreen
@@ -354,16 +368,16 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                         } else {
                             activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
                         }
-                    }) { 
+                    }) {
                         Icon(
                             if (showFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                             null,
                             tint = Color.White
-                        ) 
+                        )
                     }
                 }
             }
-            
+
             when (type) {
                 "video" -> {
                     AndroidView(
@@ -373,12 +387,16 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                                 start()
                             }
                         },
-                        modifier = Modifier.fillMaxSize().weight(1f)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .weight(1f)
                     )
                 }
                 "image" -> {
                     Box(
-                        modifier = Modifier.fillMaxSize().weight(1f),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
                         LoadImageFromFile(file = file, modifier = Modifier.fillMaxSize())
@@ -392,7 +410,7 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                             "Unable to read file: ${e.message}"
                         }
                     }
-                    
+
                     Text(
                         text = textContent,
                         color = Color.Green,
@@ -435,23 +453,23 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
     private var originalSystemUiVisibility = 0
     private var isFullscreen = false
     private var videoContainer: FrameLayout? = null
-    private var onLongClickListener: ((String) -> Unit)? = null
+    private var longClickListener: ((String) -> Unit)? = null
     private var isDesktopMode = false
-    
+
     private var _onPageStartedListener: ((String) -> Unit)? = null
     private var _onPageFinishedListener: ((String) -> Unit)? = null
     private var _onProgressChangedListener: ((Int) -> Unit)? = null
     private var _onTitleChangedListener: ((String) -> Unit)? = null
-    
+
     fun setOnPageStartedListener(listener: (String) -> Unit) { _onPageStartedListener = listener }
     fun setOnPageFinishedListener(listener: (String) -> Unit) { _onPageFinishedListener = listener }
     fun setOnProgressChangedListener(listener: (Int) -> Unit) { _onProgressChangedListener = listener }
     fun setOnTitleChangedListener(listener: (String) -> Unit) { _onTitleChangedListener = listener }
-    
+
     init {
         setupWebView()
     }
-    
+
     fun setDesktopMode(enabled: Boolean) {
         isDesktopMode = enabled
         if (enabled) {
@@ -461,13 +479,14 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
         }
         reload()
     }
-    
+
     fun isDesktopMode(): Boolean = isDesktopMode
-    
+
+    // Fixed: single-parameter lambda (String) -> Unit
     fun setOnLongClickListener(listener: (String) -> Unit) {
-        onLongClickListener = listener
+        longClickListener = listener
     }
-    
+
     private fun setupWebView() {
         settings.apply {
             javaScriptEnabled = true
@@ -485,29 +504,30 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
             databaseEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
         }
-        
+
         webChromeClient = object : WebChromeClient() {
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
                 if (customView != null) {
                     callback.onCustomViewHidden()
                     return
                 }
-                
+
                 customView = view
                 customViewCallback = callback
                 isFullscreen = true
-                
+
                 videoContainer = FrameLayout(context).apply {
                     addView(view, ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     ))
                 }
-                
+
                 (context as? android.app.Activity)?.apply {
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                     (window.decorView as ViewGroup).addView(videoContainer)
                     originalSystemUiVisibility = window.decorView.systemUiVisibility
+                    @Suppress("DEPRECATION")
                     window.decorView.systemUiVisibility = (
                         View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
                         View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
@@ -518,46 +538,45 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                     )
                 }
             }
-            
+
             override fun onHideCustomView() {
                 if (customView == null) return
-                
+
                 (context as? android.app.Activity)?.apply {
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     videoContainer?.let { (window.decorView as ViewGroup).removeView(it) }
                     videoContainer = null
+                    @Suppress("DEPRECATION")
                     window.decorView.systemUiVisibility = originalSystemUiVisibility
                 }
-                
+
                 customView = null
                 customViewCallback?.onCustomViewHidden()
                 isFullscreen = false
             }
-            
+
             override fun getDefaultVideoPoster(): Bitmap? = null
-            
+
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
                 _onProgressChangedListener?.invoke(newProgress)
             }
-            
+
             override fun onReceivedTitle(view: WebView?, title: String?) {
                 super.onReceivedTitle(view, title)
                 title?.let { _onTitleChangedListener?.invoke(it) }
             }
         }
-        
+
         webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 url?.let { _onPageStartedListener?.invoke(it) }
             }
-            
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                url?.let { 
-                    _onPageFinishedListener?.invoke(it)
-                }
+                url?.let { _onPageFinishedListener?.invoke(it) }
                 view?.evaluateJavascript(
                     """
                     (function() {
@@ -572,7 +591,7 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                     null
                 )
             }
-            
+
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 request?.url?.let { uri ->
                     val urlString = uri.toString()
@@ -584,8 +603,9 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 return false
             }
         }
-        
-        setOnLongClickListener { _, _ ->
+
+        // Register the long-click handler on the WebView itself
+        setOnLongClickListener {
             val hitTestResult = hitTestResult
             when (hitTestResult.type) {
                 WebView.HitTestResult.SRC_ANCHOR_TYPE,
@@ -593,15 +613,15 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 WebView.HitTestResult.IMAGE_TYPE -> {
                     val extra = hitTestResult.extra
                     if (extra != null) {
-                        onLongClickListener?.invoke(extra)
+                        longClickListener?.invoke(extra)
                     }
                 }
-                else -> false
+                else -> {}
             }
             true
         }
     }
-    
+
     fun saveTabState(): TabState {
         return TabState(
             url = url ?: "",
@@ -611,21 +631,21 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
             canGoForward = canGoForward()
         )
     }
-    
+
     fun restoreTabState(state: TabState) {
         if (state.url.isNotEmpty()) {
             loadUrl(state.url)
         }
     }
-    
+
     fun isVideoFullscreen(): Boolean = isFullscreen
-    
+
     fun exitFullscreen() {
         if (isFullscreen) {
             webChromeClient?.onHideCustomView()
         }
     }
-    
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK && isFullscreen) {
             exitFullscreen()
@@ -649,10 +669,10 @@ fun TabbedBrowserScreen() {
     var progress by remember { mutableStateOf(0f) }
     var currentWebView by remember { mutableStateOf<CustomWebView?>(null) }
     var isDesktopMode by remember { mutableStateOf(false) }
-    
+
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    
+
     val downloadReceiver = remember {
         object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -663,14 +683,14 @@ fun TabbedBrowserScreen() {
             }
         }
     }
-    
+
     DisposableEffect(Unit) {
         context.registerReceiver(downloadReceiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
         onDispose {
             context.unregisterReceiver(downloadReceiver)
         }
     }
-    
+
     if (showDesktopModeDialog) {
         AlertDialog(
             onDismissRequest = { showDesktopModeDialog = false },
@@ -711,7 +731,7 @@ fun TabbedBrowserScreen() {
             }
         )
     }
-    
+
     Column {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -728,11 +748,11 @@ fun TabbedBrowserScreen() {
                 IconButton(onClick = { currentWebView?.goBack() }) {
                     Icon(Icons.Default.ArrowBack, "Back")
                 }
-                
+
                 IconButton(onClick = { currentWebView?.goForward() }) {
                     Icon(Icons.Default.ArrowForward, "Forward")
                 }
-                
+
                 Box(modifier = Modifier.weight(1f)) {
                     TextField(
                         value = currentUrl.text,
@@ -755,7 +775,7 @@ fun TabbedBrowserScreen() {
                             }
                         }
                     )
-                    
+
                     if (isLoading) {
                         LinearProgressIndicator(
                             progress = progress,
@@ -767,7 +787,7 @@ fun TabbedBrowserScreen() {
                         )
                     }
                 }
-                
+
                 IconButton(onClick = {
                     var url = currentUrl.text.trim()
                     if (url.isNotEmpty()) {
@@ -783,7 +803,7 @@ fun TabbedBrowserScreen() {
                 }) {
                     Icon(if (isLoading) Icons.Default.Close else Icons.Default.Search, "Go/Refresh")
                 }
-                
+
                 IconButton(onClick = {
                     val homeUrl = "https://www.google.com"
                     currentUrl = TextFieldValue(homeUrl)
@@ -792,14 +812,14 @@ fun TabbedBrowserScreen() {
                 }) {
                     Icon(Icons.Default.Home, "Home")
                 }
-                
+
                 IconButton(onClick = { showDesktopModeDialog = true }) {
                     Icon(
                         if (isDesktopMode) Icons.Default.Computer else Icons.Default.PhoneAndroid,
                         "Mode"
                     )
                 }
-                
+
                 Badge(
                     containerColor = if (tabs.size > 1) MaterialTheme.colorScheme.primary else Color.Transparent
                 ) {
@@ -814,13 +834,13 @@ fun TabbedBrowserScreen() {
                         }
                     }
                 }
-                
+
                 IconButton(onClick = { showBrowserMenu = true }) {
                     Icon(Icons.Default.MoreVert, "Menu")
                 }
             }
         }
-        
+
         if (showTabList) {
             AlertDialog(
                 onDismissRequest = { showTabList = false },
@@ -829,7 +849,7 @@ fun TabbedBrowserScreen() {
                     LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                         itemsIndexed(tabs) { index, url ->
                             ListItem(
-                                headlineContent = { 
+                                headlineContent = {
                                     Text(
                                         tabTitles.getOrElse(index) { url.take(30) },
                                         maxLines = 1
@@ -845,7 +865,7 @@ fun TabbedBrowserScreen() {
                                         Text(" • Active", color = MaterialTheme.colorScheme.primary)
                                     }
                                 },
-                                modifier = Modifier.clickable { 
+                                modifier = Modifier.clickable {
                                     activeTabIndex = index
                                     currentUrl = TextFieldValue(tabs[index])
                                     currentWebView?.loadUrl(tabs[index])
@@ -853,7 +873,7 @@ fun TabbedBrowserScreen() {
                                 },
                                 trailingContent = {
                                     if (tabs.size > 1) {
-                                        IconButton(onClick = { 
+                                        IconButton(onClick = {
                                             tabs = tabs.toMutableList().apply { removeAt(index) }
                                             tabTitles = tabTitles.toMutableList().apply { removeAt(index) }
                                             if (activeTabIndex >= tabs.size) activeTabIndex = tabs.size - 1
@@ -862,14 +882,14 @@ fun TabbedBrowserScreen() {
                                                 currentUrl = TextFieldValue(tabs[activeTabIndex])
                                                 currentWebView?.loadUrl(tabs[activeTabIndex])
                                             }
-                                        }) { 
-                                            Icon(Icons.Default.Close, null) 
+                                        }) {
+                                            Icon(Icons.Default.Close, null)
                                         }
                                     }
                                 }
                             )
                         }
-                        
+
                         item {
                             Button(
                                 onClick = {
@@ -881,7 +901,9 @@ fun TabbedBrowserScreen() {
                                     currentWebView?.loadUrl(newUrl)
                                     showTabList = false
                                 },
-                                modifier = Modifier.fillMaxWidth().padding(8.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp)
                             ) {
                                 Icon(Icons.Default.Add, null)
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -895,7 +917,7 @@ fun TabbedBrowserScreen() {
                 }
             )
         }
-        
+
         if (showBrowserMenu) {
             AlertDialog(
                 onDismissRequest = { showBrowserMenu = false },
@@ -958,10 +980,8 @@ fun TabbedBrowserScreen() {
             factory = { ctx ->
                 CustomWebView(ctx).apply {
                     setDesktopMode(isDesktopMode)
-                    
-                    // ⚠️ এই লাইনটাই ছিল ৫৯১ নম্বর লাইন - এখানে সমস্যা ছিল
-                    // আগে ছিল: setOnLongClickListener { url, _ -> 
-                    // এখন ফিক্স করা হয়েছে: setOnLongClickListener { url ->
+
+                    // Fixed: correct single-parameter (String) -> Unit lambda
                     setOnLongClickListener { url ->
                         android.app.AlertDialog.Builder(ctx)
                             .setTitle("Link Options")
@@ -983,14 +1003,18 @@ fun TabbedBrowserScreen() {
                             .setNegativeButton("Cancel", null)
                             .show()
                     }
-                    
+
                     setDownloadListener { downloadUrl, _, _, _, _ ->
                         try {
                             val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
                                 setTitle("Downloading...")
                                 setDescription("Downloading file from web")
                                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "download_${System.currentTimeMillis()}")
+                                setDestinationInExternalPublicDir(
+                                    Environment.DIRECTORY_DOWNLOADS,
+                                    "download_${System.currentTimeMillis()}"
+                                )
+                                @Suppress("DEPRECATION")
                                 allowScanningByMediaScanner()
                             }
                             val downloadManager = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -1000,37 +1024,37 @@ fun TabbedBrowserScreen() {
                             Toast.makeText(ctx, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
                         }
                     }
-                    
+
                     setOnPageStartedListener { url ->
                         scope.launch {
                             currentUrl = TextFieldValue(url)
-                            tabs = tabs.toMutableList().apply { 
-                                if (activeTabIndex < size) this[activeTabIndex] = url 
+                            tabs = tabs.toMutableList().apply {
+                                if (activeTabIndex < size) this[activeTabIndex] = url
                             }
                         }
                     }
-                    
-                    setOnPageFinishedListener { url ->
+
+                    setOnPageFinishedListener { _ ->
                         scope.launch { isLoading = false }
                     }
-                    
+
                     setOnProgressChangedListener { newProgress ->
                         scope.launch {
                             progress = newProgress / 100f
                             isLoading = newProgress in 1..99
                         }
                     }
-                    
+
                     setOnTitleChangedListener { title ->
                         scope.launch {
                             if (activeTabIndex < tabTitles.size) {
-                                tabTitles = tabTitles.toMutableList().apply { 
+                                tabTitles = tabTitles.toMutableList().apply {
                                     this[activeTabIndex] = title.take(20)
                                 }
                             }
                         }
                     }
-                    
+
                     currentWebView = this
                     loadUrl(tabs[activeTabIndex])
                 }
