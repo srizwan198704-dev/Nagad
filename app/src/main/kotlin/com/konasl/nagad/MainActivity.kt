@@ -9,16 +9,13 @@ import android.net.Uri
 import android.os.*
 import android.provider.Settings
 import android.view.KeyEvent
-import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.*
 import android.widget.FrameLayout
 import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
-import android.widget.LinearLayout
-import android.view.ViewGroup
-import android.view.View
-import android.widget.Button
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
@@ -44,8 +41,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainActivity : ComponentActivity() {
-    private lateinit var customWebView: CustomWebView
-    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         checkPermissions()
@@ -342,9 +337,8 @@ fun installApk(context: android.content.Context, file: File) {
 @SuppressLint("SetJavaScriptEnabled")
 class CustomWebView(context: android.content.Context) : WebView(context) {
     private var customView: View? = null
-    private var customViewCallback: CustomViewCallback? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var originalSystemUiVisibility = 0
-    private var originalOrientation = 0
     private var isFullscreen = false
     private var videoContainer: FrameLayout? = null
     
@@ -412,7 +406,7 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 
                 (context as? android.app.Activity)?.apply {
                     // ওরিয়েন্টেশন রিস্টোর
-                    requestedOrientation = originalOrientation
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     
                     // ভিডিও ভিউ রিমুভ
                     videoContainer?.let { (window.decorView as ViewGroup).removeView(it) }
@@ -472,7 +466,7 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
     
     fun exitFullscreen() {
         if (isFullscreen) {
-            webChromeClient.onHideCustomView()
+            webChromeClient?.onHideCustomView()
         }
     }
     
