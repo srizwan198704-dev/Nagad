@@ -22,7 +22,12 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # gradlew ছাড়া বিল্ড করার জন্য সরাসরি gradle কমান্ড ব্যবহার
+      # নির্দিষ্ট স্টেবল Gradle ভার্সন সেটআপ করা হচ্ছে
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+
       - name: Build with Gradle
         run: gradle assembleDebug
 
