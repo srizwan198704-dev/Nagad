@@ -5,13 +5,14 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch: # এই লাইনটি GitHub-এ 'Run workflow' বাটনটি যোগ করবে
 
 jobs:
   build:
     name: Generate and Release APK
     runs-on: ubuntu-latest
     permissions:
-      contents: write # রিলিজ তৈরি করার জন্য প্রয়োজনীয় পারমিশন
+      contents: write
 
     steps:
       - name: Checkout Code
@@ -24,17 +25,14 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # নির্দিষ্ট গ্র্যাডল ভার্সন সেটআপ (যা রানার মেশিনে সরাসরি গ্র্যাডল কমান্ড এনাবেল করবে)
       - name: Setup Gradle 8.5
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.5
 
-      # 'gradlew' এর বদলে সরাসরি 'gradle' ব্যবহার করা হয়েছে যাতে ফাইল নট ফাউন্ড এরর না আসে
       - name: Build Debug APK
         run: gradle assembleDebug
 
-      # সরাসরি রিলিজ সেকশনে APK ফাইলটি পুশ করা
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
