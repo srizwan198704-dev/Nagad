@@ -40,7 +40,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.navigation.compose.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -169,8 +168,6 @@ fun FileManagerScreen() {
             )
             LazyColumn {
                 items(sortedFiles) { file ->
-                    var isLongPressed by remember { mutableStateOf(false) }
-                    
                     ListItem(
                         headlineContent = { Text(file.name) },
                         leadingContent = {
@@ -962,6 +959,9 @@ fun TabbedBrowserScreen() {
                 CustomWebView(ctx).apply {
                     setDesktopMode(isDesktopMode)
                     
+                    // ⚠️ এই লাইনটাই ছিল ৫৯১ নম্বর লাইন - এখানে সমস্যা ছিল
+                    // আগে ছিল: setOnLongClickListener { url, _ -> 
+                    // এখন ফিক্স করা হয়েছে: setOnLongClickListener { url ->
                     setOnLongClickListener { url ->
                         android.app.AlertDialog.Builder(ctx)
                             .setTitle("Link Options")
