@@ -8,8 +8,10 @@ on:
 
 jobs:
   build:
-    name: Generate APK
+    name: Generate and Release APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # রিলিজ তৈরি করার জন্য এই পারমিশনটি জরুরি
 
     steps:
       - name: Checkout Code
@@ -22,17 +24,26 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # নির্দিষ্ট স্টেবল Gradle ভার্সন সেটআপ করা হচ্ছে
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.5
 
-      - name: Build with Gradle
-        run: gradle assembleDebug
+      - name: Grant Execute Permission
+        run: chmod +x gradlew
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      # সরাসরি APK ফাইলটি রিলিজ সেকশনে আপলোড করার স্টেপ
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: Nagad-App-Debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          files: app/build/outputs/apk/debug/app-debug.apk
+          tag_name: build-${{ github.run_number }}
+          name: App Build v${{ github.run_number }}
+          body: "সরাসরি নিচের লিঙ্ক থেকে APK ডাউনলোড করুন।"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
