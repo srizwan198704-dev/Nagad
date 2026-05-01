@@ -110,7 +110,6 @@ fun FileManagerScreen() {
     val activity = context as? MainActivity
     var currentPath by remember { mutableStateOf(Environment.getExternalStorageDirectory()) }
     
-    // Alphabetically sorted files
     val sortedFiles = remember(currentPath) {
         currentPath.listFiles()?.let { files ->
             files.sortedWith(compareBy(
@@ -264,27 +263,20 @@ fun FileManagerScreen() {
     }
 }
 
-suspend fun PointerInputScope.detectLongPressAndPopup(
+suspend fun detectLongPressAndPopup(
     file: File,
     onLongPress: (File) -> Unit
 ) {
     var isLongPressHandled = false
     var startTime = System.currentTimeMillis()
     
-    awaitPointerEventScope {
-        while (true) {
-            val event = awaitPointerEvent()
-            if (event.changes.any { it.pressed }) {
-                startTime = System.currentTimeMillis()
-                delay(500)
-                if (!isLongPressHandled && System.currentTimeMillis() - startTime >= 500) {
-                    isLongPressHandled = true
-                    onLongPress(file)
-                }
-            } else {
-                isLongPressHandled = false
-            }
+    while (true) {
+        if (System.currentTimeMillis() - startTime >= 500 && !isLongPressHandled) {
+            isLongPressHandled = true
+            onLongPress(file)
+            break
         }
+        delay(50)
     }
 }
 
@@ -672,7 +664,7 @@ fun TabbedBrowserScreen() {
     var showDesktopModeDialog by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf(TextFieldValue(tabs[activeTabIndex])) }
     var isLoading by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0) }
+    var progress by remember { mutableStateOf(0f) }
     var currentWebView by remember { mutableStateOf<CustomWebView?>(null) }
     var isDesktopMode by remember { mutableStateOf(false) }
     
@@ -697,7 +689,6 @@ fun TabbedBrowserScreen() {
         }
     }
     
-    // Desktop Mode Dialog
     if (showDesktopModeDialog) {
         AlertDialog(
             onDismissRequest = { showDesktopModeDialog = false },
@@ -785,7 +776,7 @@ fun TabbedBrowserScreen() {
                     
                     if (isLoading) {
                         LinearProgressIndicator(
-                            progress = { progress / 100f },
+                            progress = progress,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .align(Alignment.BottomCenter),
@@ -1040,7 +1031,7 @@ fun TabbedBrowserScreen() {
                     
                     setOnProgressChangedListener { newProgress ->
                         scope.launch {
-                            progress = newProgress
+                            progress = newProgress / 100f
                             isLoading = newProgress in 1..99
                         }
                     }
