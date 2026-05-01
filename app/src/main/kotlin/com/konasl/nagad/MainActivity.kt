@@ -8,10 +8,17 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
+import android.view.KeyEvent
+import android.view.LayoutInflater
 import android.webkit.*
+import android.widget.FrameLayout
 import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
+import android.widget.LinearLayout
+import android.view.ViewGroup
+import android.view.View
+import android.widget.Button
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
@@ -37,6 +44,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+    private lateinit var customWebView: CustomWebView
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         checkPermissions()
@@ -329,6 +338,153 @@ fun installApk(context: android.content.Context, file: File) {
     }
 }
 
+// কাস্টম ওয়েবভিউ ক্লাস ভিডিও পপআপ সাপোর্ট সহ
+@SuppressLint("SetJavaScriptEnabled")
+class CustomWebView(context: android.content.Context) : WebView(context) {
+    private var customView: View? = null
+    private var customViewCallback: CustomViewCallback? = null
+    private var originalSystemUiVisibility = 0
+    private var originalOrientation = 0
+    private var isFullscreen = false
+    private var videoContainer: FrameLayout? = null
+    
+    init {
+        setupWebView()
+    }
+    
+    private fun setupWebView() {
+        settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            loadWithOverviewMode = true
+            useWideViewPort = true
+            mediaPlaybackRequiresUserGesture = false
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+        }
+        
+        webChromeClient = object : WebChromeClient() {
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden()
+                    return
+                }
+                
+                customView = view
+                customViewCallback = callback
+                isFullscreen = true
+                
+                // ভিডিও কন্টেইনার তৈরি
+                videoContainer = FrameLayout(context).apply {
+                    addView(view, ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    ))
+                }
+                
+                (context as? android.app.Activity)?.apply {
+                    // ওরিয়েন্টেশন পরিবর্তন
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    
+                    // ভিডিও ভিউ যোগ করা
+                    (window.decorView as ViewGroup).addView(videoContainer)
+                    
+                    // সিস্টেম UI লুকানো
+                    originalSystemUiVisibility = window.decorView.systemUiVisibility
+                    window.decorView.systemUiVisibility = (
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                        View.SYSTEM_UI_FLAG_FULLSCREEN or
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    )
+                }
+            }
+            
+            override fun onHideCustomView() {
+                if (customView == null) return
+                
+                (context as? android.app.Activity)?.apply {
+                    // ওরিয়েন্টেশন রিস্টোর
+                    requestedOrientation = originalOrientation
+                    
+                    // ভিডিও ভিউ রিমুভ
+                    videoContainer?.let { (window.decorView as ViewGroup).removeView(it) }
+                    videoContainer = null
+                    
+                    // সিস্টেম UI রিস্টোর
+                    window.decorView.systemUiVisibility = originalSystemUiVisibility
+                }
+                
+                customView = null
+                customViewCallback?.onCustomViewHidden()
+                isFullscreen = false
+            }
+            
+            override fun getDefaultVideoPoster(): Bitmap? {
+                return null
+            }
+            
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                super.onProgressChanged(view, newProgress)
+            }
+        }
+        
+        webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                // ভিডিও প্লেয়ার সাপোর্টের জন্য JavaScript ইঞ্জেক্ট
+                view?.evaluateJavascript(
+                    """
+                    (function() {
+                        var videos = document.querySelectorAll('video');
+                        for(var i = 0; i < videos.length; i++) {
+                            videos[i].setAttribute('controls', 'true');
+                            videos[i].setAttribute('webkit-playsinline', 'true');
+                            videos[i].setAttribute('playsinline', 'true');
+                        }
+                    })();
+                    """.trimIndent(),
+                    null
+                )
+            }
+            
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                request?.url?.let { uri ->
+                    val urlString = uri.toString()
+                    if (urlString.startsWith("http") || urlString.startsWith("https")) {
+                        view?.loadUrl(urlString)
+                        return true
+                    }
+                }
+                return false
+            }
+        }
+    }
+    
+    fun isVideoFullscreen(): Boolean = isFullscreen
+    
+    fun exitFullscreen() {
+        if (isFullscreen) {
+            webChromeClient.onHideCustomView()
+        }
+    }
+    
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK && isFullscreen) {
+            exitFullscreen()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+}
+
 @Composable
 fun TabbedBrowserScreen() {
     var tabs by remember { mutableStateOf(mutableListOf("https://www.google.com")) }
@@ -336,7 +492,7 @@ fun TabbedBrowserScreen() {
     var showTabList by remember { mutableStateOf(false) }
     var showBrowserMenu by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf(TextFieldValue(tabs[activeTabIndex])) }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var webViewRef by remember { mutableStateOf<CustomWebView?>(null) }
     val context = LocalContext.current
 
     Column {
@@ -354,27 +510,26 @@ fun TabbedBrowserScreen() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // URL ইনপুট ফিল্ড
-                OutlinedTextField(
-                    value = currentUrl,
-                    onValueChange = { currentUrl = it },
+                TextField(
+                    value = currentUrl.text,
+                    onValueChange = { currentUrl = TextFieldValue(it) },
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Enter URL (e.g., google.com)") },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                    shape = MaterialTheme.shapes.medium,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 )
                 
                 Spacer(modifier = Modifier.width(8.dp))
                 
                 // GO বাটন
-                IconButton(
+                Button(
                     onClick = {
                         var url = currentUrl.text.trim()
                         if (url.isNotEmpty()) {
-                            // URL ভ্যালিডেট করা
                             if (!url.startsWith("http://") && !url.startsWith("https://")) {
                                 url = if (url.contains(".")) {
                                     "https://$url"
@@ -389,18 +544,11 @@ fun TabbedBrowserScreen() {
                             webViewRef?.loadUrl(url)
                         }
                     },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.primary,
-                            shape = RoundedCornerShape(24.dp)
-                        )
+                    shape = MaterialTheme.shapes.medium
                 ) {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = "Go",
-                        tint = Color.White
-                    )
+                    Icon(Icons.Default.Search, contentDescription = "Go")
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Go")
                 }
             }
         }
@@ -413,28 +561,18 @@ fun TabbedBrowserScreen() {
                 .padding(4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            // ব্যাক বাটন
-            IconButton(onClick = {
-                webViewRef?.goBack()
-            }) {
+            IconButton(onClick = { webViewRef?.goBack() }) {
                 Icon(Icons.Default.ArrowBack, "Back")
             }
             
-            // ফরওয়ার্ড বাটন
-            IconButton(onClick = {
-                webViewRef?.goForward()
-            }) {
+            IconButton(onClick = { webViewRef?.goForward() }) {
                 Icon(Icons.Default.ArrowForward, "Forward")
             }
             
-            // রিফ্রেশ বাটন
-            IconButton(onClick = {
-                webViewRef?.reload()
-            }) {
+            IconButton(onClick = { webViewRef?.reload() }) {
                 Icon(Icons.Default.Refresh, "Refresh")
             }
             
-            // হোম বাটন
             IconButton(onClick = {
                 val homeUrl = "https://www.google.com"
                 currentUrl = TextFieldValue(homeUrl)
@@ -446,12 +584,17 @@ fun TabbedBrowserScreen() {
                 Icon(Icons.Default.Home, "Home")
             }
             
-            // ট্যাব বাটন
-            IconButton(onClick = { showTabList = true }) {
-                Icon(Icons.Default.Tab, "Tabs (${tabs.size})")
+            IconButton(onClick = { 
+                val fullscreenStatus = webViewRef?.isVideoFullscreen() ?: false
+                if (fullscreenStatus) {
+                    webViewRef?.exitFullscreen()
+                } else {
+                    showTabList = true
+                }
+            }) {
+                Icon(Icons.Default.Tab, "Tabs")
             }
             
-            // নিউ ট্যাব বাটন
             IconButton(onClick = { 
                 val newUrl = "https://www.google.com"
                 tabs = tabs.toMutableList().apply { add(newUrl) }
@@ -462,7 +605,6 @@ fun TabbedBrowserScreen() {
                 Icon(Icons.Default.Add, "New Tab")
             }
             
-            // মেনু বাটন
             IconButton(onClick = { showBrowserMenu = true }) {
                 Icon(Icons.Default.MoreVert, "Menu")
             }
@@ -542,10 +684,18 @@ fun TabbedBrowserScreen() {
                             Text("🔄 Refresh")
                         }
                         TextButton(onClick = {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webViewRef?.url ?: tabs[activeTabIndex])))
+                            val currentUrl = webViewRef?.url ?: tabs[activeTabIndex]
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)))
                             showBrowserMenu = false
                         }) {
                             Text("🌐 Open in External Browser")
+                        }
+                        TextButton(onClick = {
+                            webViewRef?.settings?.javaScriptEnabled = true
+                            showBrowserMenu = false
+                            Toast.makeText(context, "JavaScript Enabled", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("⚙️ Enable JavaScript")
                         }
                     }
                 },
@@ -556,76 +706,21 @@ fun TabbedBrowserScreen() {
         }
 
         // ওয়েবভিউ
-        SecureWebView(
-            url = tabs.getOrElse(activeTabIndex) { "https://www.google.com" },
-            onUrlChange = { newUrl ->
-                if (activeTabIndex < tabs.size) {
-                    tabs = tabs.toMutableList().apply { 
-                        this[activeTabIndex] = newUrl 
-                    }
-                    currentUrl = TextFieldValue(newUrl)
+        AndroidView(
+            factory = { ctx ->
+                CustomWebView(ctx).apply {
+                    webViewRef = this
+                    loadUrl(tabs.getOrElse(activeTabIndex) { "https://www.google.com" })
                 }
             },
-            onWebViewReady = { webView ->
+            update = { webView ->
                 webViewRef = webView
-            }
+                val currentTabUrl = tabs.getOrElse(activeTabIndex) { "https://www.google.com" }
+                if (webView.url != currentTabUrl) {
+                    webView.loadUrl(currentTabUrl)
+                }
+            },
+            modifier = Modifier.fillMaxSize()
         )
     }
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-fun SecureWebView(url: String, onUrlChange: (String) -> Unit, onWebViewReady: (WebView) -> Unit) {
-    val context = LocalContext.current
-    
-    AndroidView(
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    allowFileAccess = true
-                    allowContentAccess = true
-                    setSupportZoom(true)
-                    builtInZoomControls = true
-                    displayZoomControls = false
-                    loadWithOverviewMode = true
-                    useWideViewPort = true
-                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                }
-                webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        url?.let { onUrlChange(it) }
-                    }
-                    
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        request?.url?.let { uri ->
-                            val urlString = uri.toString()
-                            if (urlString.startsWith("http") || urlString.startsWith("https")) {
-                                view?.loadUrl(urlString)
-                                return true
-                            }
-                        }
-                        return false
-                    }
-                }
-                webChromeClient = WebChromeClient()
-                setDownloadListener { downloadUrl, _, _, _, _ ->
-                    try {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "Cannot download: ${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                loadUrl(url)
-                onWebViewReady(this)
-            }
-        },
-        update = { webView ->
-            if (webView.url != url) {
-                webView.loadUrl(url)
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
 }
