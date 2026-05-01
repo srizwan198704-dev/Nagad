@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.konasl.nagad"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.konasl.nagad"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 100
         versionName = "100"
 
