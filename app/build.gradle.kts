@@ -30,7 +30,10 @@ android {
     }
     kotlinOptions { jvmTarget = "1.8" }
     buildFeatures { compose = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.1" }
+    composeOptions { 
+        // Kotlin 1.9.0 এর সাথে এটি সামঞ্জস্যপূর্ণ
+        kotlinCompilerExtensionVersion = "1.5.1" 
+    }
 }
 
 dependencies {
