@@ -2,7 +2,7 @@ name: Android Build Pipeline
 
 on:
   push:
-    branches: [ "main", "master" ] # আপনার মেইন ব্রাঞ্চের নাম অনুযায়ী পরিবর্তন করতে পারেন
+    branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
 
@@ -22,11 +22,9 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Grant Execute Permission for Gradlew
-        run: chmod +x gradlew
-
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
+      # gradlew ছাড়া বিল্ড করার জন্য সরাসরি gradle কমান্ড ব্যবহার
+      - name: Build with Gradle
+        run: gradle assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
