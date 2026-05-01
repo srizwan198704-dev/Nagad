@@ -101,7 +101,7 @@ fun MainApp() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FileManagerScreen() {
     val context = LocalContext.current
@@ -588,7 +588,7 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
             }
         }
         
-        setOnLongClickListener { v, _ ->
+        setOnLongClickListener { _, _ ->
             val hitTestResult = hitTestResult
             when (hitTestResult.type) {
                 WebView.HitTestResult.SRC_ANCHOR_TYPE,
@@ -923,8 +923,8 @@ fun TabbedBrowserScreen() {
                             Text("🔄 Refresh")
                         }
                         TextButton(onClick = {
-                            val currentUrl = currentWebView?.url ?: tabs[activeTabIndex]
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)))
+                            val currentPageUrl = currentWebView?.url ?: tabs[activeTabIndex]
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(currentPageUrl)))
                             showBrowserMenu = false
                         }) {
                             Text("🌐 Open in External Browser")
