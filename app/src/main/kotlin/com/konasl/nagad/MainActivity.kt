@@ -1,7 +1,11 @@
 package com.konasl.nagad
 
 import android.annotation.SuppressLint
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -28,6 +32,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
@@ -36,6 +42,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.navigation.compose.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -102,16 +109,48 @@ fun FileManagerScreen() {
     val context = LocalContext.current
     val activity = context as? MainActivity
     var currentPath by remember { mutableStateOf(Environment.getExternalStorageDirectory()) }
-    val files = currentPath.listFiles()?.sortedByDescending { it.isDirectory } ?: emptyList()
+    
+    // Alphabetically sorted files - ফোল্ডার আগে, তারপর ফাইল A-Z অনুযায়ী
+    val sortedFiles = remember(currentPath) {
+        currentPath.listFiles()?.let { files ->
+            files.sortedWith(compareBy(
+                { !it.isDirectory }, // ফোল্ডার আগে দেখাবে
+                { it.name.lowercase() } // তারপর A-Z অনুযায়ী সাজানো
+            ))
+        } ?: emptyList()
+    }
     
     var viewingFile by remember { mutableStateOf<File?>(null) }
     var fileType by remember { mutableStateOf("") }
     var showOptionsPopup by remember { mutableStateOf<File?>(null) }
+    var showVideoPopup by remember { mutableStateOf(false) }
+    var popupVideoFile by remember { mutableStateOf<File?>(null) }
 
-    if (viewingFile != null) {
+    if (viewingFile != null && !showVideoPopup) {
         InternalPlayer(viewingFile!!, fileType) { 
             viewingFile = null
             activity?.resetOrientation()
+        }
+    } else if (showVideoPopup && popupVideoFile != null) {
+        AlertDialog(
+            onDismissRequest = { 
+                showVideoPopup = false
+                popupVideoFile = null
+                activity?.resetOrientation()
+            },
+            modifier = Modifier.fillMaxSize(),
+            containerColor = Color.Black
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                VideoPopupPlayer(
+                    file = popupVideoFile!!,
+                    onClose = { 
+                        showVideoPopup = false
+                        popupVideoFile = null
+                        activity?.resetOrientation()
+                    }
+                )
+            }
         }
     } else {
         Column {
@@ -123,10 +162,18 @@ fun FileManagerScreen() {
                             Icon(Icons.Default.ArrowBack, "Back")
                         }
                     }
+                },
+                actions = {
+                    // সাজানোর তথ্য দেখানোর জন্য
+                    Text(
+                        text = "${sortedFiles.size} items",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
                 }
             )
             LazyColumn {
-                items(files) { file ->
+                items(sortedFiles) { file ->
                     ListItem(
                         headlineContent = { Text(file.name) },
                         leadingContent = {
@@ -138,29 +185,49 @@ fun FileManagerScreen() {
                             }
                             Icon(icon, null, tint = if (file.isDirectory) Color.Cyan else Color.White)
                         },
+                        supportingContent = {
+                            if (!file.isDirectory) {
+                                Text(
+                                    formatFileSize(file.length()),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        },
                         trailingContent = {
                             IconButton(onClick = { showOptionsPopup = file }) {
                                 Icon(Icons.Default.MoreVert, null, tint = Color.White)
                             }
                         },
-                        modifier = Modifier.clickable {
-                            if (file.isDirectory) {
-                                currentPath = file
-                            } else {
-                                val ext = file.extension.lowercase()
-                                when {
-                                    ext == "apk" -> installApk(context, file)
-                                    ext in listOf("mp4", "mkv", "3gp") -> { 
-                                        viewingFile = file
-                                        fileType = "video"
+                        modifier = Modifier
+                            .pointerInput(file) {
+                                detectLongPressAndPopup(file) { selectedFile ->
+                                    if (selectedFile.extension.lowercase() in listOf("mp4", "mkv", "3gp")) {
+                                        popupVideoFile = selectedFile
+                                        showVideoPopup = true
                                         activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+                                    } else {
+                                        showOptionsPopup = selectedFile
                                     }
-                                    ext in listOf("jpg", "jpeg", "png", "webp") -> { viewingFile = file; fileType = "image" }
-                                    ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> { viewingFile = file; fileType = "text" }
-                                    else -> Toast.makeText(context, "Format not supported internally", Toast.LENGTH_SHORT).show()
                                 }
                             }
-                        }
+                            .clickable {
+                                if (file.isDirectory) {
+                                    currentPath = file
+                                } else {
+                                    val ext = file.extension.lowercase()
+                                    when {
+                                        ext == "apk" -> installApk(context, file)
+                                        ext in listOf("mp4", "mkv", "3gp") -> { 
+                                            viewingFile = file
+                                            fileType = "video"
+                                            activity?.setOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+                                        }
+                                        ext in listOf("jpg", "jpeg", "png", "webp") -> { viewingFile = file; fileType = "image" }
+                                        ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> { viewingFile = file; fileType = "text" }
+                                        else -> Toast.makeText(context, "Format not supported internally", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
                     )
                 }
             }
@@ -174,6 +241,7 @@ fun FileManagerScreen() {
                     Column {
                         Text("Size: ${formatFileSize(showOptionsPopup?.length() ?: 0)}")
                         Text("Type: ${showOptionsPopup?.extension?.ifEmpty { "Folder" }}")
+                        Text("Path: ${showOptionsPopup?.parent}")
                     }
                 },
                 confirmButton = {
@@ -194,6 +262,57 @@ fun FileManagerScreen() {
                     }
                 }
             )
+        }
+    }
+}
+
+suspend fun PointerInputScope.detectLongPressAndPopup(
+    file: File,
+    onLongPress: (File) -> Unit
+) {
+    var isLongPressHandled = false
+    var startTime = System.currentTimeMillis()
+    
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent()
+            if (event.changes.any { it.pressed }) {
+                startTime = System.currentTimeMillis()
+                delay(500)
+                if (!isLongPressHandled && System.currentTimeMillis() - startTime >= 500) {
+                    isLongPressHandled = true
+                    onLongPress(file)
+                }
+            } else {
+                isLongPressHandled = false
+            }
+        }
+    }
+}
+
+@Composable
+fun VideoPopupPlayer(file: File, onClose: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(
+            factory = { ctx ->
+                VideoView(ctx).apply {
+                    setVideoPath(file.absolutePath)
+                    val mc = MediaController(ctx)
+                    mc.setAnchorView(this)
+                    setMediaController(mc)
+                    start()
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+        
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+        ) {
+            Icon(Icons.Default.Close, null, tint = Color.White)
         }
     }
 }
@@ -280,9 +399,6 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                         factory = { ctx ->
                             VideoView(ctx).apply {
                                 setVideoPath(file.absolutePath)
-                                val mc = MediaController(ctx)
-                                mc.setAnchorView(this)
-                                setMediaController(mc)
                                 start()
                             }
                         },
@@ -333,6 +449,15 @@ fun installApk(context: android.content.Context, file: File) {
     }
 }
 
+// ট্যাব স্টেট ক্লাস
+data class TabState(
+    val url: String,
+    val title: String,
+    val scrollPosition: Int,
+    val canGoBack: Boolean,
+    val canGoForward: Boolean
+)
+
 // কাস্টম ওয়েবভিউ ক্লাস ভিডিও পপআপ সাপোর্ট সহ
 @SuppressLint("SetJavaScriptEnabled")
 class CustomWebView(context: android.content.Context) : WebView(context) {
@@ -341,9 +466,37 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
     private var originalSystemUiVisibility = 0
     private var isFullscreen = false
     private var videoContainer: FrameLayout? = null
+    private var onLongClickListener: ((String) -> Unit)? = null
+    private var isDesktopMode = false
+    
+    private var _onPageStartedListener: ((String) -> Unit)? = null
+    private var _onPageFinishedListener: ((String) -> Unit)? = null
+    private var _onProgressChangedListener: ((Int) -> Unit)? = null
+    private var _onTitleChangedListener: ((String) -> Unit)? = null
+    
+    fun setOnPageStartedListener(listener: (String) -> Unit) { _onPageStartedListener = listener }
+    fun setOnPageFinishedListener(listener: (String) -> Unit) { _onPageFinishedListener = listener }
+    fun setOnProgressChangedListener(listener: (Int) -> Unit) { _onProgressChangedListener = listener }
+    fun setOnTitleChangedListener(listener: (String) -> Unit) { _onTitleChangedListener = listener }
     
     init {
         setupWebView()
+    }
+    
+    fun setDesktopMode(enabled: Boolean) {
+        isDesktopMode = enabled
+        if (enabled) {
+            settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        } else {
+            settings.userAgentString = null
+        }
+        reload()
+    }
+    
+    fun isDesktopMode(): Boolean = isDesktopMode
+    
+    fun setOnLongClickListener(listener: (String) -> Unit) {
+        onLongClickListener = listener
     }
     
     private fun setupWebView() {
@@ -360,6 +513,9 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
             mediaPlaybackRequiresUserGesture = false
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
+            setAppCacheEnabled(true)
+            databaseEnabled = true
+            cacheMode = WebSettings.LOAD_DEFAULT
         }
         
         webChromeClient = object : WebChromeClient() {
@@ -373,7 +529,6 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 customViewCallback = callback
                 isFullscreen = true
                 
-                // ভিডিও কন্টেইনার তৈরি
                 videoContainer = FrameLayout(context).apply {
                     addView(view, ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -382,13 +537,8 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 }
                 
                 (context as? android.app.Activity)?.apply {
-                    // ওরিয়েন্টেশন পরিবর্তন
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                    
-                    // ভিডিও ভিউ যোগ করা
                     (window.decorView as ViewGroup).addView(videoContainer)
-                    
-                    // সিস্টেম UI লুকানো
                     originalSystemUiVisibility = window.decorView.systemUiVisibility
                     window.decorView.systemUiVisibility = (
                         View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
@@ -405,14 +555,9 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 if (customView == null) return
                 
                 (context as? android.app.Activity)?.apply {
-                    // ওরিয়েন্টেশন রিস্টোর
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    
-                    // ভিডিও ভিউ রিমুভ
                     videoContainer?.let { (window.decorView as ViewGroup).removeView(it) }
                     videoContainer = null
-                    
-                    // সিস্টেম UI রিস্টোর
                     window.decorView.systemUiVisibility = originalSystemUiVisibility
                 }
                 
@@ -421,19 +566,30 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 isFullscreen = false
             }
             
-            override fun getDefaultVideoPoster(): Bitmap? {
-                return null
-            }
+            override fun getDefaultVideoPoster(): Bitmap? = null
             
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
+                _onProgressChangedListener?.invoke(newProgress)
+            }
+            
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                title?.let { _onTitleChangedListener?.invoke(it) }
             }
         }
         
         webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                url?.let { _onPageStartedListener?.invoke(it) }
+            }
+            
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                // ভিডিও প্লেয়ার সাপোর্টের জন্য JavaScript ইঞ্জেক্ট
+                url?.let { 
+                    _onPageFinishedListener?.invoke(it)
+                }
                 view?.evaluateJavascript(
                     """
                     (function() {
@@ -460,6 +616,37 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
                 return false
             }
         }
+        
+        setOnLongClickListener { v, _ ->
+            val hitTestResult = hitTestResult
+            when (hitTestResult.type) {
+                WebView.HitTestResult.SRC_ANCHOR_TYPE,
+                WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE,
+                WebView.HitTestResult.IMAGE_TYPE -> {
+                    val extra = hitTestResult.extra
+                    if (extra != null) {
+                        onLongClickListener?.invoke(extra)
+                    }
+                }
+            }
+            true
+        }
+    }
+    
+    fun saveTabState(): TabState {
+        return TabState(
+            url = url ?: "",
+            title = title?.toString() ?: "",
+            scrollPosition = scrollY,
+            canGoBack = canGoBack(),
+            canGoForward = canGoForward()
+        )
+    }
+    
+    fun restoreTabState(state: TabState) {
+        if (state.url.isNotEmpty()) {
+            loadUrl(state.url)
+        }
     }
     
     fun isVideoFullscreen(): Boolean = isFullscreen
@@ -482,160 +669,363 @@ class CustomWebView(context: android.content.Context) : WebView(context) {
 @Composable
 fun TabbedBrowserScreen() {
     var tabs by remember { mutableStateOf(mutableListOf("https://www.google.com")) }
+    var tabTitles by remember { mutableStateOf(mutableListOf("New Tab")) }
     var activeTabIndex by remember { mutableIntStateOf(0) }
     var showTabList by remember { mutableStateOf(false) }
     var showBrowserMenu by remember { mutableStateOf(false) }
+    var showDesktopModeDialog by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf(TextFieldValue(tabs[activeTabIndex])) }
-    var webViewRef by remember { mutableStateOf<CustomWebView?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0) }
+    var webViewMap by remember { mutableStateOf(mutableMapOf<Int, CustomWebView>()) }
+    var tabStateMap by remember { mutableStateOf(mutableMapOf<Int, TabState>()) }
+    var currentWebView by remember { mutableStateOf<CustomWebView?>(null) }
+    var isDesktopMode by remember { mutableStateOf(false) }
+    
     val context = LocalContext.current
-
+    val scope = rememberCoroutineScope()
+    
+    // ডাউনলোড রিসিভার
+    val downloadReceiver = remember {
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+                if (downloadId != -1L) {
+                    Toast.makeText(context, "Download completed!", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+    
+    DisposableEffect(Unit) {
+        context.registerReceiver(downloadReceiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+        onDispose {
+            context.unregisterReceiver(downloadReceiver)
+        }
+    }
+    
+    fun switchToTab(index: Int) {
+        if (index == activeTabIndex) return
+        
+        currentWebView?.let { webView ->
+            tabStateMap[activeTabIndex] = webView.saveTabState()
+        }
+        
+        val newWebView = webViewMap[index]
+        if (newWebView != null) {
+            val parent = (currentWebView?.parent as? ViewGroup)
+            parent?.removeView(currentWebView)
+            currentWebView = newWebView
+        } else {
+            createNewWebView(index)
+        }
+        
+        activeTabIndex = index
+        val tabUrl = tabs.getOrElse(index) { "https://www.google.com" }
+        currentUrl = TextFieldValue(tabUrl)
+        currentWebView = webViewMap[index]
+        
+        tabStateMap[index]?.let { state ->
+            currentWebView?.restoreTabState(state)
+        }
+    }
+    
+    fun createNewWebView(index: Int) {
+        val newWebView = CustomWebView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            
+            setDesktopMode(isDesktopMode)
+            
+            setOnLongClickListener { url ->
+                AlertDialog.Builder(context)
+                    .setTitle("Link Options")
+                    .setMessage(url)
+                    .setPositiveButton("Open in New Tab") { _, _ ->
+                        tabs = tabs.toMutableList().apply { add(url) }
+                        tabTitles = tabTitles.toMutableList().apply { add("Loading...") }
+                        val newIndex = tabs.size - 1
+                        createNewWebView(newIndex)
+                        switchToTab(newIndex)
+                    }
+                    .setNeutralButton("Share") { _, _ ->
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, url)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Share Link"))
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            
+            setDownloadListener { downloadUrl, _, _, _, _ ->
+                try {
+                    val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
+                        setTitle("Downloading...")
+                        setDescription("Downloading file from web")
+                        setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                        setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "download_${System.currentTimeMillis()}")
+                        allowScanningByMediaScanner()
+                    }
+                    val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                    downloadManager.enqueue(request)
+                    Toast.makeText(context, "Download started", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+            
+            setOnPageStartedListener { url ->
+                scope.launch {
+                    currentUrl = TextFieldValue(url)
+                    tabs = tabs.toMutableList().apply { 
+                        if (index < size) this[index] = url 
+                    }
+                }
+            }
+            
+            setOnPageFinishedListener { url ->
+                scope.launch { isLoading = false }
+            }
+            
+            setOnProgressChangedListener { newProgress ->
+                scope.launch {
+                    progress = newProgress
+                    isLoading = newProgress in 1..99
+                }
+            }
+            
+            setOnTitleChangedListener { title ->
+                scope.launch {
+                    if (index < tabTitles.size) {
+                        tabTitles = tabTitles.toMutableList().apply { 
+                            this[index] = title.take(20)
+                        }
+                    }
+                }
+            }
+            
+            val url = tabs.getOrElse(index) { "https://www.google.com" }
+            loadUrl(url)
+        }
+        
+        webViewMap[index] = newWebView
+        if (index == activeTabIndex) {
+            currentWebView = newWebView
+        }
+    }
+    
+    // Desktop Mode ডায়ালগ
+    if (showDesktopModeDialog) {
+        AlertDialog(
+            onDismissRequest = { showDesktopModeDialog = false },
+            title = { Text("Browser Mode") },
+            text = {
+                Column {
+                    Text("Select browsing mode:", modifier = Modifier.padding(bottom = 8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = isDesktopMode,
+                            onCheckedChange = { checked ->
+                                isDesktopMode = checked
+                                currentWebView?.setDesktopMode(checked)
+                                showDesktopModeDialog = false
+                            }
+                        )
+                        Text("Desktop Mode (View websites like on PC)")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = !isDesktopMode,
+                            onCheckedChange = { checked ->
+                                if (checked) {
+                                    isDesktopMode = false
+                                    currentWebView?.setDesktopMode(false)
+                                    showDesktopModeDialog = false
+                                }
+                            }
+                        )
+                        Text("Mobile Mode (Default)")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDesktopModeDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+    
     Column {
-        // URL এড্রেসবার
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        // Chrome-style toolbar - সবকিছু এক সারিতে
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            tonalElevation = 3.dp
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // URL ইনপুট ফিল্ড
-                TextField(
-                    value = currentUrl.text,
-                    onValueChange = { currentUrl = TextFieldValue(it) },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Enter URL (e.g., google.com)") },
-                    singleLine = true,
-                    shape = MaterialTheme.shapes.medium,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                )
+                // Back button
+                IconButton(onClick = { currentWebView?.goBack() }) {
+                    Icon(Icons.Default.ArrowBack, "Back")
+                }
                 
-                Spacer(modifier = Modifier.width(8.dp))
+                // Forward button
+                IconButton(onClick = { currentWebView?.goForward() }) {
+                    Icon(Icons.Default.ArrowForward, "Forward")
+                }
                 
-                // GO বাটন
-                Button(
-                    onClick = {
-                        var url = currentUrl.text.trim()
-                        if (url.isNotEmpty()) {
-                            if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                                url = if (url.contains(".")) {
-                                    "https://$url"
-                                } else {
-                                    "https://$url.com"
+                // URL TextField (এক্সপান্ডেড)
+                Box(modifier = Modifier.weight(1f)) {
+                    TextField(
+                        value = currentUrl.text,
+                        onValueChange = { currentUrl = TextFieldValue(it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Search or enter URL") },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.large,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        trailingIcon = {
+                            if (currentUrl.text.isNotEmpty()) {
+                                IconButton(onClick = { currentUrl = TextFieldValue("") }) {
+                                    Icon(Icons.Default.Close, "Clear")
                                 }
                             }
-                            currentUrl = TextFieldValue(url)
-                            tabs = tabs.toMutableList().apply { 
-                                this[activeTabIndex] = url 
-                            }
-                            webViewRef?.loadUrl(url)
                         }
-                    },
-                    shape = MaterialTheme.shapes.medium
+                    )
+                    
+                    // লোডিং প্রোগ্রেস বার
+                    if (isLoading) {
+                        LinearProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.BottomCenter),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = Color.Transparent
+                        )
+                    }
+                }
+                
+                // Go/Refresh button
+                IconButton(onClick = {
+                    var url = currentUrl.text.trim()
+                    if (url.isNotEmpty()) {
+                        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                            url = if (url.contains(".")) "https://$url" else "https://$url.com"
+                        }
+                        currentUrl = TextFieldValue(url)
+                        tabs = tabs.toMutableList().apply { this[activeTabIndex] = url }
+                        currentWebView?.loadUrl(url)
+                    } else {
+                        currentWebView?.reload()
+                    }
+                }) {
+                    Icon(if (isLoading) Icons.Default.Close else Icons.Default.Search, "Go/Refresh")
+                }
+                
+                // Home button
+                IconButton(onClick = {
+                    val homeUrl = "https://www.google.com"
+                    currentUrl = TextFieldValue(homeUrl)
+                    tabs = tabs.toMutableList().apply { this[activeTabIndex] = homeUrl }
+                    currentWebView?.loadUrl(homeUrl)
+                }) {
+                    Icon(Icons.Default.Home, "Home")
+                }
+                
+                // Desktop/Mobile mode button
+                IconButton(onClick = { showDesktopModeDialog = true }) {
+                    Icon(
+                        if (isDesktopMode) Icons.Default.Computer else Icons.Default.PhoneAndroid,
+                        "Mode"
+                    )
+                }
+                
+                // Tabs button with badge
+                Badge(
+                    containerColor = if (tabs.size > 1) MaterialTheme.colorScheme.primary else Color.Transparent
                 ) {
-                    Icon(Icons.Default.Search, contentDescription = "Go")
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Go")
+                    IconButton(onClick = { showTabList = true }) {
+                        Icon(Icons.Default.Tab, "Tabs")
+                        if (tabs.size > 1) {
+                            Text(
+                                text = "${tabs.size}",
+                                modifier = Modifier.padding(start = 2.dp),
+                                fontSize = MaterialTheme.typography.labelSmall.fontSize
+                            )
+                        }
+                    }
+                }
+                
+                // Menu button
+                IconButton(onClick = { showBrowserMenu = true }) {
+                    Icon(Icons.Default.MoreVert, "Menu")
                 }
             }
         }
         
-        // ব্রাউজার কন্ট্রোল বার
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            IconButton(onClick = { webViewRef?.goBack() }) {
-                Icon(Icons.Default.ArrowBack, "Back")
-            }
-            
-            IconButton(onClick = { webViewRef?.goForward() }) {
-                Icon(Icons.Default.ArrowForward, "Forward")
-            }
-            
-            IconButton(onClick = { webViewRef?.reload() }) {
-                Icon(Icons.Default.Refresh, "Refresh")
-            }
-            
-            IconButton(onClick = {
-                val homeUrl = "https://www.google.com"
-                currentUrl = TextFieldValue(homeUrl)
-                tabs = tabs.toMutableList().apply { 
-                    this[activeTabIndex] = homeUrl 
-                }
-                webViewRef?.loadUrl(homeUrl)
-            }) {
-                Icon(Icons.Default.Home, "Home")
-            }
-            
-            IconButton(onClick = { 
-                val fullscreenStatus = webViewRef?.isVideoFullscreen() ?: false
-                if (fullscreenStatus) {
-                    webViewRef?.exitFullscreen()
-                } else {
-                    showTabList = true
-                }
-            }) {
-                Icon(Icons.Default.Tab, "Tabs")
-            }
-            
-            IconButton(onClick = { 
-                val newUrl = "https://www.google.com"
-                tabs = tabs.toMutableList().apply { add(newUrl) }
-                activeTabIndex = tabs.size - 1
-                currentUrl = TextFieldValue(newUrl)
-                webViewRef?.loadUrl(newUrl)
-            }) {
-                Icon(Icons.Default.Add, "New Tab")
-            }
-            
-            IconButton(onClick = { showBrowserMenu = true }) {
-                Icon(Icons.Default.MoreVert, "Menu")
-            }
-        }
-
         // ট্যাব লিস্ট ডায়ালগ
         if (showTabList) {
             AlertDialog(
                 onDismissRequest = { showTabList = false },
-                title = { Text("Open Tabs") },
+                title = { Text("Open Tabs (${tabs.size})") },
                 text = {
                     LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                         itemsIndexed(tabs) { index, url ->
                             ListItem(
                                 headlineContent = { 
-                                    Text(url.take(50) + if (url.length > 50) "..." else "", maxLines = 1) 
+                                    Text(
+                                        tabTitles.getOrElse(index) { url.take(30) },
+                                        maxLines = 1
+                                    )
                                 },
                                 supportingContent = {
+                                    Text(
+                                        url.take(50) + if (url.length > 50) "..." else "",
+                                        maxLines = 1,
+                                        fontSize = MaterialTheme.typography.labelSmall.fontSize
+                                    )
                                     if (index == activeTabIndex) {
-                                        Text("Active", color = MaterialTheme.colorScheme.primary)
+                                        Text(" • Active", color = MaterialTheme.colorScheme.primary)
                                     }
                                 },
                                 modifier = Modifier.clickable { 
-                                    activeTabIndex = index
-                                    currentUrl = TextFieldValue(tabs[index])
-                                    webViewRef?.loadUrl(tabs[index])
+                                    switchToTab(index)
                                     showTabList = false
                                 },
                                 trailingContent = {
                                     if (tabs.size > 1) {
                                         IconButton(onClick = { 
+                                            webViewMap[index]?.destroy()
+                                            webViewMap.remove(index)
+                                            tabStateMap.remove(index)
                                             tabs = tabs.toMutableList().apply { removeAt(index) }
-                                            if (activeTabIndex >= tabs.size) activeTabIndex = tabs.size - 1
-                                            if (activeTabIndex < 0) activeTabIndex = 0
+                                            tabTitles = tabTitles.toMutableList().apply { removeAt(index) }
+                                            
+                                            if (activeTabIndex >= tabs.size) {
+                                                activeTabIndex = tabs.size - 1
+                                            }
+                                            if (activeTabIndex < 0 && tabs.isNotEmpty()) {
+                                                activeTabIndex = 0
+                                            }
+                                            
                                             if (tabs.isNotEmpty()) {
-                                                currentUrl = TextFieldValue(tabs[activeTabIndex])
-                                                webViewRef?.loadUrl(tabs[activeTabIndex])
+                                                switchToTab(activeTabIndex)
                                             }
                                         }) { 
                                             Icon(Icons.Default.Close, null) 
@@ -643,6 +1033,25 @@ fun TabbedBrowserScreen() {
                                     }
                                 }
                             )
+                        }
+                        
+                        item {
+                            Button(
+                                onClick = {
+                                    val newUrl = "https://www.google.com"
+                                    tabs = tabs.toMutableList().apply { add(newUrl) }
+                                    tabTitles = tabTitles.toMutableList().apply { add("New Tab") }
+                                    val newIndex = tabs.size - 1
+                                    createNewWebView(newIndex)
+                                    switchToTab(newIndex)
+                                    showTabList = false
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(8.dp)
+                            ) {
+                                Icon(Icons.Default.Add, null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("New Tab")
+                            }
                         }
                     }
                 },
@@ -660,7 +1069,7 @@ fun TabbedBrowserScreen() {
                 text = {
                     Column {
                         TextButton(onClick = {
-                            val currentPageUrl = webViewRef?.url ?: tabs[activeTabIndex]
+                            val currentPageUrl = currentWebView?.url ?: tabs[activeTabIndex]
                             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(Intent.EXTRA_TEXT, currentPageUrl)
@@ -671,25 +1080,37 @@ fun TabbedBrowserScreen() {
                             Text("📤 Share URL")
                         }
                         TextButton(onClick = {
-                            webViewRef?.reload()
+                            currentWebView?.reload()
                             showBrowserMenu = false
-                            Toast.makeText(context, "Page Refreshed", Toast.LENGTH_SHORT).show()
                         }) {
                             Text("🔄 Refresh")
                         }
                         TextButton(onClick = {
-                            val currentUrl = webViewRef?.url ?: tabs[activeTabIndex]
+                            val currentUrl = currentWebView?.url ?: tabs[activeTabIndex]
                             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)))
                             showBrowserMenu = false
                         }) {
                             Text("🌐 Open in External Browser")
                         }
                         TextButton(onClick = {
-                            webViewRef?.settings?.javaScriptEnabled = true
+                            currentWebView?.settings?.javaScriptEnabled = true
                             showBrowserMenu = false
                             Toast.makeText(context, "JavaScript Enabled", Toast.LENGTH_SHORT).show()
                         }) {
                             Text("⚙️ Enable JavaScript")
+                        }
+                        TextButton(onClick = {
+                            currentWebView?.clearHistory()
+                            showBrowserMenu = false
+                            Toast.makeText(context, "History Cleared", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("🗑 Clear History")
+                        }
+                        TextButton(onClick = {
+                            showDesktopModeDialog = true
+                            showBrowserMenu = false
+                        }) {
+                            Text(if (isDesktopMode) "📱 Switch to Mobile Mode" else "💻 Switch to Desktop Mode")
                         }
                     }
                 },
@@ -699,19 +1120,96 @@ fun TabbedBrowserScreen() {
             )
         }
 
-        // ওয়েবভিউ
+        // ওয়েবভিউ কন্টেইনার
         AndroidView(
             factory = { ctx ->
-                CustomWebView(ctx).apply {
-                    webViewRef = this
-                    loadUrl(tabs.getOrElse(activeTabIndex) { "https://www.google.com" })
+                android.widget.FrameLayout(ctx).apply {
+                    if (currentWebView != null) {
+                        removeAllViews()
+                        addView(currentWebView)
+                    } else {
+                        val firstWebView = CustomWebView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            setDesktopMode(isDesktopMode)
+                            
+                            setOnLongClickListener { url ->
+                                AlertDialog.Builder(ctx)
+                                    .setTitle("Link Options")
+                                    .setMessage(url)
+                                    .setPositiveButton("Open in New Tab") { _, _ ->
+                                        tabs = tabs.toMutableList().apply { add(url) }
+                                        tabTitles = tabTitles.toMutableList().apply { add("Loading...") }
+                                        val newIndex = tabs.size - 1
+                                        createNewWebView(newIndex)
+                                        switchToTab(newIndex)
+                                    }
+                                    .setNeutralButton("Share") { _, _ ->
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, url)
+                                        }
+                                        ctx.startActivity(Intent.createChooser(shareIntent, "Share Link"))
+                                    }
+                                    .setNegativeButton("Cancel", null)
+                                    .show()
+                            }
+                            setDownloadListener { downloadUrl, _, _, _, _ ->
+                                try {
+                                    val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
+                                        setTitle("Downloading...")
+                                        setDescription("Downloading file from web")
+                                        setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                        setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "download_${System.currentTimeMillis()}")
+                                        allowScanningByMediaScanner()
+                                    }
+                                    val downloadManager = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                                    downloadManager.enqueue(request)
+                                    Toast.makeText(ctx, "Download started", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(ctx, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            setOnPageStartedListener { url ->
+                                scope.launch {
+                                    currentUrl = TextFieldValue(url)
+                                    tabs = tabs.toMutableList().apply { 
+                                        if (activeTabIndex < size) this[activeTabIndex] = url 
+                                    }
+                                }
+                            }
+                            setOnPageFinishedListener { url ->
+                                scope.launch { isLoading = false }
+                            }
+                            setOnProgressChangedListener { newProgress ->
+                                scope.launch {
+                                    progress = newProgress
+                                    isLoading = newProgress in 1..99
+                                }
+                            }
+                            setOnTitleChangedListener { title ->
+                                scope.launch {
+                                    if (activeTabIndex < tabTitles.size) {
+                                        tabTitles = tabTitles.toMutableList().apply { 
+                                            this[activeTabIndex] = title.take(20)
+                                        }
+                                    }
+                                }
+                            }
+                            loadUrl(tabs[activeTabIndex])
+                        }
+                        webViewMap[activeTabIndex] = firstWebView
+                        currentWebView = firstWebView
+                        addView(firstWebView)
+                    }
                 }
             },
-            update = { webView ->
-                webViewRef = webView
-                val currentTabUrl = tabs.getOrElse(activeTabIndex) { "https://www.google.com" }
-                if (webView.url != currentTabUrl) {
-                    webView.loadUrl(currentTabUrl)
+            update = { container ->
+                if (currentWebView != null && currentWebView?.parent != container) {
+                    container.removeAllViews()
+                    container.addView(currentWebView)
                 }
             },
             modifier = Modifier.fillMaxSize()
