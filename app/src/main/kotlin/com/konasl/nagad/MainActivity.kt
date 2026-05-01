@@ -2,6 +2,8 @@ package com.konasl.nagad
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
@@ -10,7 +12,7 @@ import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.*
+import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -20,12 +22,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.navigation.compose.*
-import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -116,7 +121,10 @@ fun FileManagerScreen() {
                             Icon(icon, null, tint = if (file.isDirectory) Color.Cyan else Color.White)
                         },
                         trailingContent = {
-                            IconButton(onClick = { file.deleteRecursively(); Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show() }) {
+                            IconButton(onClick = { 
+                                file.deleteRecursively()
+                                Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                            }) {
                                 Icon(Icons.Default.Delete, null, tint = Color.Red)
                             }
                         },
@@ -129,7 +137,7 @@ fun FileManagerScreen() {
                                     ext == "apk" -> installApk(context, file)
                                     ext in listOf("mp4", "mkv", "3gp") -> { viewingFile = file; fileType = "video" }
                                     ext in listOf("jpg", "jpeg", "png", "webp") -> { viewingFile = file; fileType = "image" }
-                                    ext in listOf("txt", "json", "log") -> { viewingFile = file; fileType = "text" }
+                                    ext in listOf("txt", "json", "log", "js", "css", "html", "xml") -> { viewingFile = file; fileType = "text" }
                                     else -> Toast.makeText(context, "Format not supported internally", Toast.LENGTH_SHORT).show()
                                 }
                             }
@@ -141,12 +149,42 @@ fun FileManagerScreen() {
     }
 }
 
+// --- ইমেজ লোডার কম্পোজেবল ---
+@Composable
+fun LoadImageFromFile(file: File, modifier: Modifier = Modifier) {
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    val scope = rememberCoroutineScope()
+    
+    LaunchedEffect(file) {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                bitmap = BitmapFactory.decodeFile(file.absolutePath)
+            }
+        }
+    }
+    
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = null,
+            modifier = modifier,
+            contentScale = ContentScale.Fit
+        )
+    } else {
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+    }
+}
+
 // --- অল-ইন-ওয়ান ইন্টারনাল প্লেয়ার/ভিউয়ার ---
 @Composable
 fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Column {
-            IconButton(onClick = onBack) { Icon(Icons.Default.Close, null, tint = Color.White) }
+            IconButton(onClick = onBack) { 
+                Icon(Icons.Default.Close, null, tint = Color.White) 
+            }
             
             when (type) {
                 "video" -> {
@@ -164,17 +202,26 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
                     )
                 }
                 "image" -> {
-                    AsyncImage(
-                        model = file,
-                        contentDescription = null,
+                    LoadImageFromFile(
+                        file = file,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
                 "text" -> {
+                    val textContent = remember(file) {
+                        try {
+                            file.readText().take(50000)
+                        } catch (e: Exception) {
+                            "Unable to read file: ${e.message}"
+                        }
+                    }
+                    
                     Text(
-                        text = file.readText().take(10000),
+                        text = textContent,
                         color = Color.Green,
-                        modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp)
+                        modifier = Modifier
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp)
                     )
                 }
             }
@@ -191,22 +238,27 @@ fun installApk(context: android.content.Context, file: File) {
         }
         context.startActivity(intent)
     } catch (e: Exception) {
-        Toast.makeText(context, "Error installing APK", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Error installing APK: ${e.message}", Toast.LENGTH_SHORT).show()
     }
 }
 
 // --- ট্যাব ব্রাউজার লজিক ---
 @Composable
 fun TabbedBrowserScreen() {
-    var tabs by remember { mutableStateOf(mutableListOf("https://google.com")) }
+    var tabs by remember { mutableStateOf(mutableListOf("https://www.google.com")) }
     var activeTabIndex by remember { mutableIntStateOf(0) }
     var showTabList by remember { mutableStateOf(false) }
 
     Column {
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(4.dp)) {
-            Button(onClick = { showTabList = true }, Modifier.weight(1f)) { Text("Tabs (${tabs.size})") }
+            Button(onClick = { showTabList = true }, Modifier.weight(1f)) { 
+                Text("Tabs (${tabs.size})") 
+            }
             Spacer(Modifier.width(4.dp))
-            IconButton(onClick = { tabs = tabs.toMutableList().apply { add("https://google.com") }; activeTabIndex = tabs.size - 1 }) {
+            IconButton(onClick = { 
+                tabs = tabs.toMutableList().apply { add("https://www.google.com") }
+                activeTabIndex = tabs.size - 1 
+            }) {
                 Icon(Icons.Default.Add, "New Tab")
             }
         }
@@ -214,20 +266,39 @@ fun TabbedBrowserScreen() {
         if (showTabList) {
             AlertDialog(
                 onDismissRequest = { showTabList = false },
-                confirmButton = { TextButton(onClick = { showTabList = false }) { Text("Close") } },
+                confirmButton = { 
+                    TextButton(onClick = { showTabList = false }) { 
+                        Text("Close") 
+                    } 
+                },
                 title = { Text("Open Tabs") },
                 text = {
-                    LazyColumn {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 400.dp)
+                    ) {
                         itemsIndexed(tabs) { index, url ->
                             ListItem(
-                                headlineContent = { Text(url, maxLines = 1) },
-                                modifier = Modifier.clickable { activeTabIndex = index; showTabList = false },
+                                headlineContent = { 
+                                    Text(
+                                        url.take(50) + if (url.length > 50) "..." else "",
+                                        maxLines = 1
+                                    ) 
+                                },
+                                modifier = Modifier.clickable { 
+                                    activeTabIndex = index
+                                    showTabList = false
+                                },
                                 trailingContent = {
-                                    if(tabs.size > 1) {
+                                    if (tabs.size > 1) {
                                         IconButton(onClick = { 
                                             tabs = tabs.toMutableList().apply { removeAt(index) }
-                                            activeTabIndex = 0
-                                        }) { Icon(Icons.Default.Close, null) }
+                                            if (activeTabIndex >= tabs.size) {
+                                                activeTabIndex = tabs.size - 1
+                                            }
+                                            if (activeTabIndex < 0) activeTabIndex = 0
+                                        }) { 
+                                            Icon(Icons.Default.Close, null) 
+                                        }
                                     }
                                 }
                             )
@@ -237,9 +308,16 @@ fun TabbedBrowserScreen() {
             )
         }
 
-        SecureWebView(tabs[activeTabIndex]) { newUrl ->
-            tabs = tabs.toMutableList().apply { this[activeTabIndex] = newUrl }
-        }
+        SecureWebView(
+            url = tabs.getOrElse(activeTabIndex) { "https://www.google.com" },
+            onUrlChange = { newUrl ->
+                if (activeTabIndex < tabs.size) {
+                    tabs = tabs.toMutableList().apply { 
+                        this[activeTabIndex] = newUrl 
+                    }
+                }
+            }
+        )
     }
 }
 
@@ -254,20 +332,44 @@ fun SecureWebView(url: String, onUrlChange: (String) -> Unit) {
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     allowFileAccess = true
+                    allowContentAccess = true
+                    setSupportZoom(true)
+                    builtInZoomControls = true
+                    displayZoomControls = false
+                    loadWithOverviewMode = true
+                    useWideViewPort = true
                 }
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         url?.let { onUrlChange(it) }
                     }
+                    
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        request?.url?.let { uri ->
+                            if (uri.toString().startsWith("http")) {
+                                view?.loadUrl(uri.toString())
+                                return true
+                            }
+                        }
+                        return false
+                    }
                 }
                 webChromeClient = WebChromeClient()
-                setDownloadListener { dUrl, _, _, _, _ ->
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dUrl)))
+                setDownloadListener { downloadUrl, _, _, _, _ ->
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Cannot download: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 loadUrl(url)
             }
         },
-        update = { it.loadUrl(url) },
+        update = { webView ->
+            if (webView.url != url) {
+                webView.loadUrl(url)
+            }
+        },
         modifier = Modifier.fillMaxSize()
     )
 }
