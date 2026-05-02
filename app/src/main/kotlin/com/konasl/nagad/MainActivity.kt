@@ -16,11 +16,9 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.pdf.PdfRenderer
+import android.media.MediaPlayer
 import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.os.Environment
-import android.os.ParcelFileDescriptor
+import android.os.*
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.*
@@ -91,7 +89,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Hide action bar/toolbar
+        supportActionBar?.hide()
         window.requestFeature(Window.FEATURE_NO_TITLE)
+        
         prefs = getSharedPreferences("app_state", MODE_PRIVATE)
         checkPermissionAndInit()
     }
@@ -125,7 +127,7 @@ class MainActivity : AppCompatActivity() {
             initUI()
         } else {
             toast("Permission required for file manager")
-            initUI() // Still init UI but with limited functionality
+            initUI()
         }
     }
 
@@ -145,8 +147,8 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
         }
 
-        val fileTab = createTabButton("Files", true) { switchToFileManager() }
-        val browserTab = createTabButton("Browser", false) { switchToBrowser() }
+        val fileTab = createTabButton("📁 Files", true) { switchToFileManager() }
+        val browserTab = createTabButton("🌐 Browser", false) { switchToBrowser() }
         tabLayout.addView(fileTab)
         tabLayout.addView(browserTab)
 
@@ -250,6 +252,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             typeface = Typeface.DEFAULT_BOLD
+            textSize = 14f
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             setBackgroundColor(if (selected) Color.parseColor("#333333") else Color.TRANSPARENT)
             setOnClickListener {
@@ -273,11 +276,13 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
             setBackgroundColor(Color.WHITE)
+            elevation = dp(2).toFloat()
         }
 
         val backBtn = Button(this).apply {
             text = "←"
-            textSize = 20f
+            textSize = 24f
+            setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { goUp() }
         }
 
@@ -288,11 +293,13 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(8), 0, dp(8), 0)
             ellipsize = android.text.TextUtils.TruncateAt.START
             setSingleLine(true)
+            textSize = 14f
         }
 
         val newFolderBtn = Button(this).apply {
-            text = "+"
-            textSize = 20f
+            text = "📁+"
+            textSize = 14f
+            setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { createNewFolder() }
         }
 
@@ -302,7 +309,7 @@ class MainActivity : AppCompatActivity() {
 
         storageInfo = TextView(this).apply {
             setPadding(dp(12), dp(4), dp(12), dp(4))
-            textSize = 12f
+            textSize = 11f
             setBackgroundColor(Color.parseColor("#E0E0E0"))
         }
 
@@ -343,7 +350,9 @@ class MainActivity : AppCompatActivity() {
 
                     text1.text = "$icon ${file.name}"
                     text1.setTextColor(Color.BLACK)
+                    text1.textSize = 14f
                     text2.text = "${getSize(file.length())} | ${SimpleDateFormat("dd/MM/yy HH:mm", Locale.getDefault()).format(Date(file.lastModified()))}"
+                    text2.textSize = 11f
                     return view
                 }
             }
@@ -459,12 +468,17 @@ class MainActivity : AppCompatActivity() {
     private fun playVideo(file: File) {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
-            val layout = FrameLayout(this)
+            val layout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.BLACK)
+            }
+            
+            // Custom VideoView with better controls
             val videoView = VideoView(this).apply {
-                layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
                 setVideoPath(file.absolutePath)
                 setOnPreparedListener { mp ->
-                    mp.isLooping = true
+                    mp.isLooping = false
                     start()
                 }
                 setOnErrorListener { _, _, _ ->
@@ -472,22 +486,128 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
             }
+            
+            // Control Panel
+            val controlPanel = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.parseColor("#CC000000"))
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+            }
+            
+            val playPauseBtn = Button(this).apply {
+                text = "⏸"
+                textSize = 20f
+                setBackgroundColor(Color.TRANSPARENT)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    if (videoView.isPlaying) {
+                        videoView.pause()
+                        text = "▶"
+                    } else {
+                        videoView.start()
+                        text = "⏸"
+                    }
+                }
+            }
+            
+            val seekBar = SeekBar(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                        if (fromUser) {
+                            videoView.seekTo(progress)
+                        }
+                    }
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                })
+            }
+            
+            val timeText = TextView(this).apply {
+                text = "00:00 / 00:00"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                setPadding(dp(8), 0, dp(8), 0)
+            }
+            
+            val fullscreenBtn = Button(this).apply {
+                text = "⛶"
+                textSize = 20f
+                setBackgroundColor(Color.TRANSPARENT)
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    // Toggle fullscreen
+                    val isFullscreen = dialog.window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0
+                    if (isFullscreen) {
+                        dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                    } else {
+                        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                    }
+                }
+            }
+            
             val closeBtn = Button(this).apply {
                 text = "✕"
-                textSize = 24f
-                setBackgroundColor(Color.parseColor("#AA000000"))
+                textSize = 20f
+                setBackgroundColor(Color.TRANSPARENT)
                 setTextColor(Color.WHITE)
-                layoutParams = FrameLayout.LayoutParams(dp(50), dp(50), Gravity.TOP or Gravity.END).apply {
-                    setMargins(0, dp(16), dp(16), 0)
+                setOnClickListener { 
+                    videoView.stopPlayback()
+                    dialog.dismiss() 
                 }
-                setOnClickListener { dialog.dismiss() }
             }
+            
+            controlPanel.addView(playPauseBtn)
+            controlPanel.addView(seekBar)
+            controlPanel.addView(timeText)
+            controlPanel.addView(fullscreenBtn)
+            controlPanel.addView(closeBtn)
+            
             layout.addView(videoView)
-            layout.addView(closeBtn)
+            layout.addView(controlPanel)
+            
+            // Update seekbar and time
+            val timer = Timer()
+            timer.schedule(object : TimerTask() {
+                override fun run() {
+                    runOnUiThread {
+                        if (videoView.isPlaying) {
+                            val current = videoView.currentPosition
+                            val duration = videoView.duration
+                            seekBar.max = duration
+                            seekBar.progress = current
+                            timeText.text = "${formatTime(current)} / ${formatTime(duration)}"
+                        }
+                    }
+                }
+            }, 0, 1000)
+            
+            dialog.setOnDismissListener { timer.cancel() }
             dialog.setContentView(layout)
             dialog.show()
+            
+            // Set landscape orientation for video
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            
+            dialog.setOnDismissListener {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                timer.cancel()
+            }
+            
         } catch (e: Exception) {
             toast("Error playing video: ${e.message}")
+        }
+    }
+    
+    private fun formatTime(millis: Int): String {
+        val seconds = millis / 1000
+        val minutes = seconds / 60
+        val hours = minutes / 60
+        return if (hours > 0) {
+            String.format("%02d:%02d:%02d", hours, minutes % 60, seconds % 60)
+        } else {
+            String.format("%02d:%02d", minutes, seconds % 60)
         }
     }
 
@@ -706,7 +826,8 @@ class MainActivity : AppCompatActivity() {
                     mediaPlaybackRequiresUserGesture = false
                     allowFileAccess = true
                     allowContentAccess = true
-                    userAgentString = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    allowFileAccessFromFileURLs = true
+                    allowUniversalAccessFromFileURLs = true
                 }
 
                 webViewClient = object : WebViewClient() {
@@ -791,19 +912,50 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                setDownloadListener { downloadUrl, _, contentDisposition, mimetype, _ ->
+                // Improved Download Manager
+                setDownloadListener { downloadUrl, userAgent, contentDisposition, mimetype, contentLength ->
                     try {
-                        val request = DownloadManager.Request(Uri.parse(downloadUrl))
-                        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(downloadUrl, contentDisposition, mimetype))
-                        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                        dm.enqueue(request)
-                        toast("Downloading...")
+                        val fileName = URLUtil.guessFileName(downloadUrl, contentDisposition, mimetype)
+                        
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            // For Android 10+
+                            val contentValues = ContentValues().apply {
+                                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                                put(MediaStore.MediaColumns.MIME_TYPE, mimetype)
+                                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                            }
+                            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                            if (uri != null) {
+                                val request = DownloadManager.Request(Uri.parse(downloadUrl))
+                                request.setDestinationUri(uri)
+                                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                request.setMimeType(mimetype)
+                                request.setTitle(fileName)
+                                request.setDescription("Downloading $fileName")
+                                
+                                val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                                dm.enqueue(request)
+                                toast("Download started: $fileName")
+                            }
+                        } else {
+                            // For Android 9 and below
+                            val request = DownloadManager.Request(Uri.parse(downloadUrl))
+                                .setTitle(fileName)
+                                .setDescription("Downloading $fileName")
+                                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                            
+                            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                            dm.enqueue(request)
+                            toast("Download started: $fileName")
+                        }
                     } catch (e: Exception) {
-                        toast("Download failed")
+                        toast("Download failed: ${e.message}")
                     }
                 }
 
+                webView.webViewClient = webViewClient
+                webView.webChromeClient = webChromeClient
                 loadUrl(url)
             }
 
@@ -812,12 +964,15 @@ class MainActivity : AppCompatActivity() {
 
             val tabButton = Button(this).apply {
                 text = "Tab ${webTabs.size}"
-                textSize = 12f
+                textSize = 11f
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#444444"))
-                layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.MATCH_PARENT).apply { 
+                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.MATCH_PARENT).apply { 
                     setMargins(dp(2), dp(2), dp(2), dp(2))
                 }
+                setPadding(dp(4), 0, dp(4), 0)
+                setSingleLine(true)
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setOnClickListener { switchTab(webTabs.indexOf(tab)) }
                 setOnLongClickListener { 
                     closeTab(webTabs.indexOf(tab))
@@ -874,7 +1029,7 @@ class MainActivity : AppCompatActivity() {
         for (i in 0 until tabContainer.childCount) {
             val btn = tabContainer.getChildAt(i) as? Button ?: continue
             val title = if (i < webTabs.size) webTabs[i].title else "Tab"
-            btn.text = if (title.length > 8) title.substring(0, 7) + "…" else title
+            btn.text = if (title.length > 7) title.substring(0, 6) + "…" else title
             btn.setBackgroundColor(if (i == currentTabIndex) Color.parseColor("#6200EE") else Color.parseColor("#444444"))
         }
     }
