@@ -80,7 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var isUIInitialized = false
 
     // Download tracking
-    private val activeDownloads = mutableMapOf<Long, String>() // downloadId -> fileName
+    private val activeDownloads = mutableMapOf<Long, String>()
     private var downloadReceiver: BroadcastReceiver? = null
 
     data class WebTab(
@@ -589,7 +589,6 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER
             }
 
-            // Center container for VideoView
             val videoContainer = FrameLayout(this).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
@@ -619,7 +618,6 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(8), dp(8), dp(8))
             }
 
-            // Play/Pause & Seek bar row
             val topControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -665,7 +663,6 @@ class MainActivity : AppCompatActivity() {
             topControls.addView(seekBar)
             topControls.addView(timeText)
 
-            // Orientation control buttons
             val orientationControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -678,7 +675,6 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    dialog.setContentView(layout)
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                     Toast.makeText(this@MainActivity, "Portrait Mode", Toast.LENGTH_SHORT).show()
                 }
@@ -1041,11 +1037,13 @@ class MainActivity : AppCompatActivity() {
                 mediaPlaybackRequiresUserGesture = false
                 allowFileAccess = true
                 allowContentAccess = true
-                // Google Account login fix
                 setSavePassword(true)
                 setSaveFormData(true)
-                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             }
+            
+            // Fix: Enable third party cookies properly
+            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+            CookieManager.getInstance().setAcceptCookie(true)
 
             updateDesktopMode(webView)
 
