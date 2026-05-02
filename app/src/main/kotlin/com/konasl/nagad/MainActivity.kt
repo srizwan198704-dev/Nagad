@@ -298,7 +298,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fileListView.adapter = adapter
-        fileListView.setOnItemClickListener { _, _, position, _ ->
+        fileListView.setOnItemClickListener { parent, view, position, id ->
             val file = files[position]
             when {
                 file.isDirectory -> loadFiles(file)
@@ -309,7 +309,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        fileListView.setOnItemLongClickListener { _, _, position, _ ->
+        fileListView.setOnItemLongClickListener { parent, view, position, id ->
             showFileOptions(files[position])
             true
         }
@@ -325,9 +325,9 @@ class MainActivity : AppCompatActivity() {
     private fun createNewFolder() {
         val input = EditText(this)
         AlertDialog.Builder(this)
-           .setTitle("New Folder")
-           .setView(input)
-           .setPositiveButton("Create") { _, _ ->
+         .setTitle("New Folder")
+         .setView(input)
+         .setPositiveButton("Create") { dialog, which ->
                 val name = input.text.toString().trim()
                 if (name.isNotEmpty()) {
                     val newFolder = File(currentPath, name)
@@ -337,8 +337,8 @@ class MainActivity : AppCompatActivity() {
                     } else toast("Failed")
                 }
             }
-           .setNegativeButton("Cancel", null)
-           .show()
+         .setNegativeButton("Cancel", null)
+         .show()
     }
 
     private fun showFileOptions(file: File) {
@@ -346,8 +346,8 @@ class MainActivity : AppCompatActivity() {
         if (file.name.endsWith(".pdf", true)) options.add(1, "PDF to JPG")
 
         AlertDialog.Builder(this)
-           .setTitle(file.name)
-           .setItems(options.toTypedArray()) { _, which ->
+         .setTitle(file.name)
+         .setItems(options.toTypedArray()) { dialog, which ->
                 when (options[which]) {
                     "Delete" -> deleteFile(file)
                     "Rename" -> renameFile(file)
@@ -355,37 +355,37 @@ class MainActivity : AppCompatActivity() {
                     "Details" -> showDetails(file)
                 }
             }
-           .show()
+         .show()
     }
 
     private fun deleteFile(file: File) {
         AlertDialog.Builder(this)
-           .setTitle("Delete?")
-           .setMessage("Delete ${file.name}?")
-           .setPositiveButton("Yes") { _, _ ->
+         .setTitle("Delete?")
+         .setMessage("Delete ${file.name}?")
+         .setPositiveButton("Yes") { dialog, which ->
                 if (file.deleteRecursively()) {
                     toast("Deleted")
                     loadFiles(currentPath)
                 }
             }
-           .setNegativeButton("No", null)
-           .show()
+         .setNegativeButton("No", null)
+         .show()
     }
 
     private fun renameFile(file: File) {
         val input = EditText(this).apply { setText(file.name) }
         AlertDialog.Builder(this)
-           .setTitle("Rename")
-           .setView(input)
-           .setPositiveButton("OK") { _, _ ->
+         .setTitle("Rename")
+         .setView(input)
+         .setPositiveButton("OK") { dialog, which ->
                 val newName = input.text.toString().trim()
                 if (newName.isNotEmpty() && file.renameTo(File(file.parent, newName))) {
                     toast("Renamed")
                     loadFiles(currentPath)
                 }
             }
-           .setNegativeButton("Cancel", null)
-           .show()
+         .setNegativeButton("Cancel", null)
+         .show()
     }
 
     private fun showDetails(file: File) {
@@ -437,10 +437,10 @@ class MainActivity : AppCompatActivity() {
             }
             scrollView.addView(textView)
             AlertDialog.Builder(this)
-               .setTitle(file.name)
-               .setView(scrollView)
-               .setPositiveButton("Close", null)
-               .show()
+             .setTitle(file.name)
+             .setView(scrollView)
+             .setPositiveButton("Close", null)
+             .show()
         } catch (e: Exception) {
             toast("Error: ${e.message}")
         }
@@ -574,14 +574,14 @@ class MainActivity : AppCompatActivity() {
 
         val urlBarLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(8), dp(8), 0)
+            setPadding(dp(8), dp(8), 0)
         }
 
         urlBar = EditText(this).apply {
             hint = "Enter URL"
             layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
             setSingleLine(true)
-            setOnEditorActionListener { _, _, _ ->
+            setOnEditorActionListener { v, actionId, event ->
                 loadUrlInCurrentTab()
                 true
             }
