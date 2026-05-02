@@ -89,7 +89,7 @@ class MainActivity : AppCompatActivity() {
         var url: String = ""
     )
 
-    // File upload callback — must be declared before onCreate
+    // File upload callback
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
 
     private val fileChooserLauncher = registerForActivityResult(
@@ -113,7 +113,7 @@ class MainActivity : AppCompatActivity() {
                 initUI()
             } else {
                 Toast.makeText(this, "Storage permission required", Toast.LENGTH_SHORT).show()
-                initUI() // init anyway so app doesn't stay blank
+                initUI()
             }
         }
     }
@@ -121,7 +121,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // MUST call before setContentView
         try {
             supportActionBar?.hide()
         } catch (e: Exception) { }
@@ -170,7 +169,7 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        initUI() // init regardless, handle gracefully inside
+        initUI()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -178,7 +177,6 @@ class MainActivity : AppCompatActivity() {
         if (isUIInitialized) return
         isUIInitialized = true
 
-        // Safe storage directory
         currentPath = try {
             Environment.getExternalStorageDirectory().takeIf { it.exists() && it.canRead() }
                 ?: filesDir
@@ -227,12 +225,10 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(rootLayout)
 
-        // Restore state AFTER setContentView
         restoreState()
     }
 
     private fun restoreState() {
-        // Restore file path
         try {
             val savedPath = prefs.getString(KEY_CURRENT_PATH, null)
             if (savedPath != null) {
@@ -244,7 +240,6 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { }
         loadFiles(currentPath)
 
-        // Restore browser tabs
         try {
             val tabUrls = prefs.getStringSet(KEY_TAB_URLS, null)
             if (!tabUrls.isNullOrEmpty()) {
@@ -262,7 +257,6 @@ class MainActivity : AppCompatActivity() {
             switchTab(currentTabIndex)
         }
 
-        // Restore active view
         val savedIsFileManager = prefs.getBoolean(KEY_IS_FILE_MANAGER, true)
         if (savedIsFileManager) {
             switchToFileManager()
@@ -592,11 +586,20 @@ class MainActivity : AppCompatActivity() {
             val layout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.BLACK)
+                gravity = Gravity.CENTER
+            }
+
+            // Center container for VideoView
+            val videoContainer = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                )
             }
 
             val videoView = VideoView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
                 )
                 setVideoPath(file.absolutePath)
                 setOnPreparedListener { mp ->
@@ -608,12 +611,18 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
             }
+            videoContainer.addView(videoView)
 
             val controlPanel = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
+                orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#CC000000"))
                 setPadding(dp(8), dp(8), dp(8), dp(8))
+            }
+
+            // Play/Pause & Seek bar row
+            val topControls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
             }
 
             val playPauseBtn = Button(this).apply {
@@ -652,23 +661,72 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(8), 0, dp(8), 0)
             }
 
+            topControls.addView(playPauseBtn)
+            topControls.addView(seekBar)
+            topControls.addView(timeText)
+
+            // Orientation control buttons
+            val orientationControls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(8))
+            }
+
+            val portraitBtn = Button(this).apply {
+                text = "📱 Portrait"
+                textSize = 12f
+                setBackgroundColor(Color.parseColor("#333333"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    dialog.setContentView(layout)
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    Toast.makeText(this@MainActivity, "Portrait Mode", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            val landscapeBtn = Button(this).apply {
+                text = "🌍 Landscape"
+                textSize = 12f
+                setBackgroundColor(Color.parseColor("#333333"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    Toast.makeText(this@MainActivity, "Landscape Mode", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            val sensorBtn = Button(this).apply {
+                text = "🔄 Auto"
+                textSize = 12f
+                setBackgroundColor(Color.parseColor("#333333"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                    Toast.makeText(this@MainActivity, "Auto Rotation", Toast.LENGTH_SHORT).show()
+                }
+            }
+
             val closeBtn = Button(this).apply {
-                text = "✕"
-                textSize = 20f
-                setBackgroundColor(Color.TRANSPARENT)
+                text = "✕ Close"
+                textSize = 14f
+                setBackgroundColor(Color.parseColor("#D32F2F"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     try { videoView.stopPlayback() } catch (e: Exception) { }
                     dialog.dismiss()
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 }
             }
 
-            controlPanel.addView(playPauseBtn)
-            controlPanel.addView(seekBar)
-            controlPanel.addView(timeText)
-            controlPanel.addView(closeBtn)
+            orientationControls.addView(portraitBtn)
+            orientationControls.addView(landscapeBtn)
+            orientationControls.addView(sensorBtn)
+            orientationControls.addView(closeBtn)
 
-            layout.addView(videoView)
+            controlPanel.addView(topControls)
+            controlPanel.addView(orientationControls)
+
+            layout.addView(videoContainer)
             layout.addView(controlPanel)
 
             val timer = Timer()
@@ -983,6 +1041,10 @@ class MainActivity : AppCompatActivity() {
                 mediaPlaybackRequiresUserGesture = false
                 allowFileAccess = true
                 allowContentAccess = true
+                // Google Account login fix
+                setSavePassword(true)
+                setSaveFormData(true)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             }
 
             updateDesktopMode(webView)
@@ -1087,7 +1149,7 @@ class MainActivity : AppCompatActivity() {
                     filePathCallback: ValueCallback<Array<Uri>>?,
                     fileChooserParams: FileChooserParams?
                 ): Boolean {
-                    fileUploadCallback?.onReceiveValue(null) // cancel any pending
+                    fileUploadCallback?.onReceiveValue(null)
                     fileUploadCallback = filePathCallback
                     val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
@@ -1102,7 +1164,6 @@ class MainActivity : AppCompatActivity() {
                 handleDownload(downloadUrl, userAgent, contentDisposition, mimetype, contentLength, webView)
             }
 
-            // Add tab button
             val tabIndex = webTabs.size - 1
             val tabButton = Button(this).apply {
                 text = "Tab ${tabIndex + 1}"
@@ -1251,10 +1312,8 @@ class MainActivity : AppCompatActivity() {
             val rawName = URLUtil.guessFileName(url, contentDisposition, mimetype)
             val fileName = sanitizeFileName(rawName)
 
-            // Cookie — অনেক site এর জন্য অপরিহার্য
             val cookies = CookieManager.getInstance().getCookie(url) ?: ""
 
-            // Actual UA from webview
             val ua = if (userAgentStr.isBlank()) {
                 try { webView.settings.userAgentString } catch (e: Exception) { userAgentStr }
             } else userAgentStr
@@ -1273,17 +1332,13 @@ class MainActivity : AppCompatActivity() {
                             setNotificationVisibility(
                                 DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                             )
-                            // Cookie পাঠানো
                             if (cookies.isNotEmpty()) addRequestHeader("Cookie", cookies)
-                            // User-Agent পাঠানো
                             if (ua.isNotEmpty()) addRequestHeader("User-Agent", ua)
-                            // Referer
                             try {
                                 val referer = "${parsedUri.scheme}://${parsedUri.host}"
                                 addRequestHeader("Referer", referer)
                             } catch (e: Exception) { }
 
-                            // Android 10+ MediaStore, নিচে legacy
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                 setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
                             } else {
@@ -1303,7 +1358,6 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, "⬇️ শুরু হয়েছে: $fileName", Toast.LENGTH_SHORT).show()
 
                     } catch (e: Exception) {
-                        // DownloadManager ব্যর্থ হলে manual download try করো
                         Toast.makeText(this, "DownloadManager ব্যর্থ, retry করছে...", Toast.LENGTH_SHORT).show()
                         downloadManually(url, cookies, ua, contentDisposition, mimetype)
                     }
@@ -1316,7 +1370,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Blob URL — JS দিয়ে base64 বানিয়ে ধরতে হয় */
     private fun downloadBlobUrl(blobUrl: String, webView: WebView) {
         val js = """
             javascript:(function() {
@@ -1351,7 +1404,6 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Blob ফাইল প্রস্তুত করছে...", Toast.LENGTH_SHORT).show()
     }
 
-    /** data:... URL (base64 encoded content) সরাসরি ফাইলে লেখা */
     private fun downloadDataUrl(dataUrl: String, overrideMime: String = "") {
         Thread {
             try {
@@ -1361,7 +1413,7 @@ class MainActivity : AppCompatActivity() {
                     return@Thread
                 }
 
-                val header = dataUrl.substring(0, commaIdx) // e.g. "data:application/pdf;base64"
+                val header = dataUrl.substring(0, commaIdx)
                 val base64Data = dataUrl.substring(commaIdx + 1)
                 val mimeType = if (overrideMime.isNotEmpty()) overrideMime
                                else header.substringAfter("data:").substringBefore(";").ifBlank { "application/octet-stream" }
@@ -1403,7 +1455,6 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** DownloadManager কাজ না করলে manual HttpURLConnection দিয়ে download */
     private fun downloadManually(
         url: String,
         cookies: String,
@@ -1509,7 +1560,6 @@ class MainActivity : AppCompatActivity() {
                             val reasonCol = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
                             val reason = if (reasonCol >= 0) cursor.getInt(reasonCol) else 0
                             val reasonStr = downloadFailReason(reason)
-                            // DownloadManager failed — manual fallback চেষ্টা
                             Toast.makeText(
                                 this@MainActivity,
                                 "⚠️ DownloadManager ব্যর্থ ($reasonStr), retry করছে...",
@@ -1558,7 +1608,6 @@ class MainActivity : AppCompatActivity() {
     override fun onBackPressed() {
         when {
             customView != null -> {
-                // Hide fullscreen video
                 val chromeClient = try {
                     webTabs[currentTabIndex].webView.webChromeClient
                 } catch (e: Exception) { null }
