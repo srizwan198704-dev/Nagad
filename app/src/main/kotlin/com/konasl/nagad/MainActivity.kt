@@ -473,7 +473,6 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.BLACK)
             }
             
-            // Custom VideoView with better controls
             val videoView = VideoView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
                 setVideoPath(file.absolutePath)
@@ -487,7 +486,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            // Control Panel
             val controlPanel = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -537,7 +535,6 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.TRANSPARENT)
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    // Toggle fullscreen
                     val isFullscreen = dialog.window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0
                     if (isFullscreen) {
                         dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
@@ -567,7 +564,6 @@ class MainActivity : AppCompatActivity() {
             layout.addView(videoView)
             layout.addView(controlPanel)
             
-            // Update seekbar and time
             val timer = Timer()
             timer.schedule(object : TimerTask() {
                 override fun run() {
@@ -587,7 +583,6 @@ class MainActivity : AppCompatActivity() {
             dialog.setContentView(layout)
             dialog.show()
             
-            // Set landscape orientation for video
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             
             dialog.setOnDismissListener {
@@ -912,13 +907,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Improved Download Manager
-                setDownloadListener { downloadUrl, userAgent, contentDisposition, mimetype, contentLength ->
+                setDownloadListener { downloadUrl, _, contentDisposition, mimetype, _ ->
                     try {
                         val fileName = URLUtil.guessFileName(downloadUrl, contentDisposition, mimetype)
                         
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            // For Android 10+
                             val contentValues = ContentValues().apply {
                                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                                 put(MediaStore.MediaColumns.MIME_TYPE, mimetype)
@@ -938,7 +931,6 @@ class MainActivity : AppCompatActivity() {
                                 toast("Download started: $fileName")
                             }
                         } else {
-                            // For Android 9 and below
                             val request = DownloadManager.Request(Uri.parse(downloadUrl))
                                 .setTitle(fileName)
                                 .setDescription("Downloading $fileName")
@@ -953,10 +945,6 @@ class MainActivity : AppCompatActivity() {
                         toast("Download failed: ${e.message}")
                     }
                 }
-
-                webView.webViewClient = webViewClient
-                webView.webChromeClient = webChromeClient
-                loadUrl(url)
             }
 
             val tab = WebTab(webView, title = "New Tab", url = url)
