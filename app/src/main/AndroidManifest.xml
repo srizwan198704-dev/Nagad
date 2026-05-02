@@ -6,8 +6,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Nagad"
-        android:theme="@android:style/Theme.NoTitleBar">
+        android:label="Nagad">
         <activity
             android:name=".MainActivity"
             android:exported="true"
