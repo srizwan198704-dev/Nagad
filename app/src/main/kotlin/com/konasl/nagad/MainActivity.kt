@@ -18,6 +18,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -28,8 +29,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.*
@@ -75,36 +79,31 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp() {
     val navController = rememberNavController()
+    var isFullScreenPlayerOpen by remember { mutableStateOf(false) }
     
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentRoute = navBackStackEntry?.destination?.route
+            if (!isFullScreenPlayerOpen) {
+                NavigationBar {
+                    val navBackStackEntry by navController.currentBackStackEntryAsState()
+                    val currentRoute = navBackStackEntry?.destination?.route
 
-                val items = listOf(
-                    "files" to Icons.Default.Storage,
-                    "browser" to Icons.Default.Language
-                )
-
-                items.forEach { (route, icon) ->
-                    NavigationBarItem(
-                        icon = { Icon(icon, route) },
-                        label = { Text(route.replaceFirstChar { it.uppercase() }) },
-                        selected = currentRoute == route,
-                        onClick = {
-                            if (currentRoute != route) {
-                                navController.navigate(route) {
-                                    // FIXED: Correct way to handle state saving/restoration
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+                    listOf("files" to Icons.Default.Storage, "browser" to Icons.Default.Language).forEach { (route, icon) ->
+                        NavigationBarItem(
+                            icon = { Icon(icon, route) },
+                            label = { Text(route.replaceFirstChar { it.uppercase() }) },
+                            selected = currentRoute == route,
+                            onClick = {
+                                if (currentRoute != route) {
+                                    navController.navigate(route) {
+                                        popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -112,24 +111,24 @@ fun MainApp() {
         NavHost(
             navController = navController, 
             startDestination = "files", 
-            modifier = Modifier.padding(padding)
+            modifier = Modifier.padding(if (isFullScreenPlayerOpen) PaddingValues(0.dp) else padding)
         ) {
-            composable("files") { FileManagerScreen() }
+            composable("files") { 
+                FileManagerScreen(onPlayerStateChange = { isFullScreenPlayerOpen = it }) 
+            }
             composable("browser") { TabbedBrowserScreen() }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun FileManagerScreen() {
+fun FileManagerScreen(onPlayerStateChange: (Boolean) -> Unit) {
     val context = LocalContext.current
     var currentPathString by rememberSaveable { mutableStateOf(Environment.getExternalStorageDirectory().absolutePath) }
     val currentPath = File(currentPathString)
     
     var files by remember { mutableStateOf(emptyList<File>()) }
-    
-    // Refresh file list when path changes
     LaunchedEffect(currentPathString) {
         files = currentPath.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
     }
@@ -138,50 +137,36 @@ fun FileManagerScreen() {
     var fileType by remember { mutableStateOf("") }
     var fileToDelete by remember { mutableStateOf<File?>(null) }
 
-    // DELETE OPTION: Confirmation Dialog
     if (fileToDelete != null) {
         AlertDialog(
             onDismissRequest = { fileToDelete = null },
             title = { Text("Delete Item") },
             text = { Text("Are you sure you want to delete ${fileToDelete?.name}?") },
             confirmButton = {
-                Button(
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
-                    onClick = {
-                        val file = fileToDelete
-                        if (file != null && file.deleteRecursively()) {
-                            files = files.filter { it != file }
-                            Toast.makeText(context, "Deleted successfully", Toast.LENGTH_SHORT).show()
-                        }
-                        fileToDelete = null
+                Button(colors = ButtonDefaults.buttonColors(containerColor = Color.Red), onClick = {
+                    if (fileToDelete?.deleteRecursively() == true) {
+                        files = files.filter { it != fileToDelete }
                     }
-                ) { Text("Delete", color = Color.White) }
+                    fileToDelete = null
+                }) { Text("Delete") }
             },
-            dismissButton = {
-                TextButton(onClick = { fileToDelete = null }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { fileToDelete = null }) { Text("Cancel") } }
         )
     }
 
     if (viewingFile != null) {
-        InternalPlayer(viewingFile!!, fileType) { viewingFile = null }
+        onPlayerStateChange(true)
+        InternalPlayer(viewingFile!!, fileType) { 
+            viewingFile = null
+            onPlayerStateChange(false)
+        }
     } else {
-        // BACK PRESS: Maintain folder state
         BackHandler(enabled = currentPathString != Environment.getExternalStorageDirectory().absolutePath) {
             currentPathString = currentPath.parentFile?.absolutePath ?: currentPathString
         }
 
         Column {
-            TopAppBar(
-                title = { Text(if (currentPathString == Environment.getExternalStorageDirectory().absolutePath) "Files" else currentPath.name) },
-                navigationIcon = {
-                    if (currentPathString != Environment.getExternalStorageDirectory().absolutePath) {
-                        IconButton(onClick = { currentPathString = currentPath.parentFile?.absolutePath ?: currentPathString }) {
-                            Icon(Icons.Default.ArrowBack, "Back")
-                        }
-                    }
-                }
-            )
+            TopAppBar(title = { Text(if (currentPathString == Environment.getExternalStorageDirectory().absolutePath) "Files" else currentPath.name) })
             LazyColumn(Modifier.fillMaxSize()) {
                 items(files) { file ->
                     ListItem(
@@ -190,26 +175,21 @@ fun FileManagerScreen() {
                             val icon = when {
                                 file.isDirectory -> Icons.Default.Folder
                                 file.extension.lowercase() in listOf("mp4", "mkv") -> Icons.Default.PlayCircle
-                                file.extension.lowercase() in listOf("jpg", "png", "jpeg") -> Icons.Default.Image
                                 else -> Icons.Default.FileOpen
                             }
                             Icon(icon, null, tint = if (file.isDirectory) Color.Cyan else Color.White)
                         },
-                        modifier = Modifier
-                            .combinedClickable(
-                                onClick = {
-                                    if (file.isDirectory) currentPathString = file.absolutePath
-                                    else {
-                                        val ext = file.extension.lowercase()
-                                        when {
-                                            ext == "apk" -> installApk(context, file)
-                                            ext in listOf("mp4", "mkv") -> { viewingFile = file; fileType = "video" }
-                                            ext in listOf("jpg", "jpeg", "png") -> { viewingFile = file; fileType = "image" }
-                                        }
-                                    }
-                                },
-                                onLongClick = { fileToDelete = file }
-                            )
+                        modifier = Modifier.combinedClickable(
+                            onClick = {
+                                if (file.isDirectory) currentPathString = file.absolutePath
+                                else {
+                                    val ext = file.extension.lowercase()
+                                    if (ext in listOf("mp4", "mkv")) { viewingFile = file; fileType = "video" }
+                                    else if (ext in listOf("jpg", "png", "jpeg")) { viewingFile = file; fileType = "image" }
+                                }
+                            },
+                            onLongClick = { fileToDelete = file }
+                        )
                     )
                 }
             }
@@ -223,91 +203,152 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
     BackHandler { onBack() }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // VIDEO CONTROLS: PiP and Orientation
         if (type == "video") {
             Row(Modifier.align(Alignment.TopEnd).padding(16.dp).zIndex(2f)) {
-                IconButton(onClick = { activity?.toggleOrientation() }) {
-                    Icon(Icons.Default.ScreenRotation, "Rotate", tint = Color.White)
-                }
-                IconButton(onClick = { activity?.enterPiPMode() }) {
-                    Icon(Icons.Default.PictureInPicture, "PiP", tint = Color.White)
-                }
+                IconButton(onClick = { activity?.toggleOrientation() }) { Icon(Icons.Default.ScreenRotation, null, tint = Color.White) }
+                IconButton(onClick = { activity?.enterPiPMode() }) { Icon(Icons.Default.PictureInPicture, null, tint = Color.White) }
+                IconButton(onClick = { onBack() }) { Icon(Icons.Default.Close, null, tint = Color.White) }
             }
-        }
-        
-        when (type) {
-            "video" -> {
-                AndroidView(
-                    factory = { ctx ->
-                        android.widget.VideoView(ctx).apply {
-                            setVideoPath(file.absolutePath)
-                            setMediaController(android.widget.MediaController(ctx).apply { setAnchorView(this@apply) })
-                            start()
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            "image" -> {
-                val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-                if (bitmap != null) {
-                    Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                }
+            AndroidView(
+                factory = { ctx ->
+                    android.widget.VideoView(ctx).apply {
+                        setVideoPath(file.absolutePath)
+                        setMediaController(android.widget.MediaController(ctx).apply { setAnchorView(this@apply) })
+                        start()
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+            if (bitmap != null) Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            IconButton(onClick = { onBack() }, Modifier.align(Alignment.TopEnd).padding(16.dp)) {
+                Icon(Icons.Default.Close, null, tint = Color.White)
             }
         }
     }
 }
 
+data class BrowserTab(val url: String, val title: String = "New Tab")
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun TabbedBrowserScreen() {
-    var urlInput by rememberSaveable { mutableStateOf("https://www.google.com") }
-    var webViewInstance: WebView? by remember { mutableStateOf(null) }
-    val activity = LocalContext.current as? MainActivity
-
-    // BROWSER BACK: Prevents closing the app if the web can go back
-    BackHandler(enabled = webViewInstance?.canGoBack() == true) {
-        webViewInstance?.goBack()
-    }
+    var tabs by rememberSaveable { mutableStateOf(listOf(BrowserTab("https://www.google.com"))) }
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+    var urlInput by remember { mutableStateOf(tabs[selectedTabIndex].url) }
+    var isLoading by remember { mutableStateOf(false) }
+    var progress by remember { mutableFloatStateOf(0f) }
+    
+    val webViews = remember { mutableMapOf<Int, WebView>() }
 
     Column(Modifier.fillMaxSize()) {
+        ScrollableTabRow(
+            selectedTabIndex = selectedTabIndex,
+            edgePadding = 0.dp,
+            containerColor = MaterialTheme.colorScheme.surface,
+            divider = {}
+        ) {
+            tabs.forEachIndexed { index, tab ->
+                Tab(
+                    selected = selectedTabIndex == index,
+                    onClick = { 
+                        selectedTabIndex = index
+                        urlInput = tabs[index].url
+                    },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.widthIn(max = 80.dp))
+                            if (tabs.size > 1) {
+                                IconButton(onClick = {
+                                    val newTabs = tabs.toMutableList()
+                                    newTabs.removeAt(index)
+                                    tabs = newTabs
+                                    if (selectedTabIndex >= newTabs.size) selectedTabIndex = newTabs.size - 1
+                                    urlInput = tabs[selectedTabIndex].url
+                                }, Modifier.size(18.dp)) {
+                                    Icon(Icons.Default.Close, null, modifier = Modifier.size(12.dp))
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+            IconButton(onClick = {
+                tabs = tabs + BrowserTab("https://www.google.com")
+                selectedTabIndex = tabs.size - 1
+                urlInput = "https://www.google.com"
+            }) { Icon(Icons.Default.Add, null) }
+        }
+
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextField(
                 value = urlInput,
                 onValueChange = { urlInput = it },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
+                shape = RoundedCornerShape(24.dp),
+                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
                 trailingIcon = {
                     IconButton(onClick = { 
-                        val url = if (urlInput.contains("://")) urlInput else "https://$urlInput"
-                        webViewInstance?.loadUrl(url) 
-                    }) {
-                        Icon(Icons.Default.Search, "Go")
-                    }
+                        val finalUrl = if (urlInput.contains("://")) urlInput else "https://$urlInput"
+                        webViews[selectedTabIndex]?.loadUrl(finalUrl)
+                    }) { Icon(Icons.Default.Search, null) }
                 }
             )
-            IconButton(onClick = { webViewInstance?.reload() }) {
-                Icon(Icons.Default.Refresh, "Reload")
-            }
+            IconButton(onClick = { webViews[selectedTabIndex]?.reload() }) { Icon(Icons.Default.Refresh, null) }
         }
 
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            urlInput = url ?: urlInput
-                        }
-                    }
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    loadUrl(urlInput)
-                    webViewInstance = this
+        if (isLoading) LinearProgressIndicator(progress = progress, modifier = Modifier.fillMaxWidth())
+
+        Box(Modifier.weight(1f)) {
+            tabs.forEachIndexed { index, tab ->
+                if (index == selectedTabIndex) {
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                        isLoading = true
+                                    }
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        isLoading = false
+                                        urlInput = url ?: ""
+                                        val newTabs = tabs.toMutableList()
+                                        newTabs[index] = BrowserTab(url ?: "", view?.title ?: "Tab")
+                                        tabs = newTabs
+                                    }
+                                }
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                        progress = newProgress / 100f
+                                    }
+                                }
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                    databaseEnabled = true
+                                    setSupportMultipleWindows(true)
+                                    javaScriptCanOpenWindowsAutomatically = true
+                                    allowFileAccess = true
+                                    useWideViewPort = true
+                                    loadWithOverviewMode = true
+                                    // Desktop User Agent for Gemini/Google Support
+                                    userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                                }
+                                loadUrl(tab.url)
+                                webViews[index] = this
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
-            },
-            update = { /* State maintained via saveState/restoreState in Navigation */ },
-            modifier = Modifier.weight(1f)
-        )
+            }
+        }
+    }
+
+    BackHandler(enabled = webViews[selectedTabIndex]?.canGoBack() == true) {
+        webViews[selectedTabIndex]?.goBack()
     }
 }
 
