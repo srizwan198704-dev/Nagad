@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.*
 import java.io.File
 
@@ -88,14 +89,16 @@ fun MainApp() {
 
                 items.forEach { (route, icon) ->
                     NavigationBarItem(
-                        icon = { Icon(icon, route.replaceFirstChar { it.uppercase() }) },
+                        icon = { Icon(icon, route) },
                         label = { Text(route.replaceFirstChar { it.uppercase() }) },
                         selected = currentRoute == route,
                         onClick = {
                             if (currentRoute != route) {
                                 navController.navigate(route) {
-                                    // This preserves the state of the screen when switching
-                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                    // FIXED: Correct way to handle state saving/restoration
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
                                     launchSingleTop = true
                                     restoreState = true
                                 }
@@ -106,7 +109,11 @@ fun MainApp() {
             }
         }
     ) { padding ->
-        NavHost(navController, "files", Modifier.padding(padding)) {
+        NavHost(
+            navController = navController, 
+            startDestination = "files", 
+            modifier = Modifier.padding(padding)
+        ) {
             composable("files") { FileManagerScreen() }
             composable("browser") { TabbedBrowserScreen() }
         }
@@ -121,6 +128,8 @@ fun FileManagerScreen() {
     val currentPath = File(currentPathString)
     
     var files by remember { mutableStateOf(emptyList<File>()) }
+    
+    // Refresh file list when path changes
     LaunchedEffect(currentPathString) {
         files = currentPath.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
     }
@@ -129,34 +138,50 @@ fun FileManagerScreen() {
     var fileType by remember { mutableStateOf("") }
     var fileToDelete by remember { mutableStateOf<File?>(null) }
 
-    // Delete Confirmation Dialog
-    fileToDelete?.let { file ->
+    // DELETE OPTION: Confirmation Dialog
+    if (fileToDelete != null) {
         AlertDialog(
             onDismissRequest = { fileToDelete = null },
-            title = { Text("Delete File") },
-            text = { Text("Are you sure you want to delete ${file.name}?") },
+            title = { Text("Delete Item") },
+            text = { Text("Are you sure you want to delete ${fileToDelete?.name}?") },
             confirmButton = {
-                TextButton(onClick = {
-                    if (file.deleteRecursively()) {
-                        files = files.filter { it != file }
-                        Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+                    onClick = {
+                        val file = fileToDelete
+                        if (file != null && file.deleteRecursively()) {
+                            files = files.filter { it != file }
+                            Toast.makeText(context, "Deleted successfully", Toast.LENGTH_SHORT).show()
+                        }
+                        fileToDelete = null
                     }
-                    fileToDelete = null
-                }) { Text("Delete", color = Color.Red) }
+                ) { Text("Delete", color = Color.White) }
             },
-            dismissButton = { TextButton(onClick = { fileToDelete = null }) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(onClick = { fileToDelete = null }) { Text("Cancel") }
+            }
         )
     }
 
     if (viewingFile != null) {
         InternalPlayer(viewingFile!!, fileType) { viewingFile = null }
     } else {
+        // BACK PRESS: Maintain folder state
         BackHandler(enabled = currentPathString != Environment.getExternalStorageDirectory().absolutePath) {
             currentPathString = currentPath.parentFile?.absolutePath ?: currentPathString
         }
 
         Column {
-            TopAppBar(title = { Text(if (currentPathString == Environment.getExternalStorageDirectory().absolutePath) "Storage" else currentPath.name) })
+            TopAppBar(
+                title = { Text(if (currentPathString == Environment.getExternalStorageDirectory().absolutePath) "Files" else currentPath.name) },
+                navigationIcon = {
+                    if (currentPathString != Environment.getExternalStorageDirectory().absolutePath) {
+                        IconButton(onClick = { currentPathString = currentPath.parentFile?.absolutePath ?: currentPathString }) {
+                            Icon(Icons.Default.ArrowBack, "Back")
+                        }
+                    }
+                }
+            )
             LazyColumn(Modifier.fillMaxSize()) {
                 items(files) { file ->
                     ListItem(
@@ -165,7 +190,7 @@ fun FileManagerScreen() {
                             val icon = when {
                                 file.isDirectory -> Icons.Default.Folder
                                 file.extension.lowercase() in listOf("mp4", "mkv") -> Icons.Default.PlayCircle
-                                file.extension.lowercase() in listOf("jpg", "png") -> Icons.Default.Image
+                                file.extension.lowercase() in listOf("jpg", "png", "jpeg") -> Icons.Default.Image
                                 else -> Icons.Default.FileOpen
                             }
                             Icon(icon, null, tint = if (file.isDirectory) Color.Cyan else Color.White)
@@ -195,17 +220,17 @@ fun FileManagerScreen() {
 @Composable
 fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
     val activity = LocalContext.current as? MainActivity
-    
     BackHandler { onBack() }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // VIDEO CONTROLS: PiP and Orientation
         if (type == "video") {
             Row(Modifier.align(Alignment.TopEnd).padding(16.dp).zIndex(2f)) {
                 IconButton(onClick = { activity?.toggleOrientation() }) {
-                    Icon(Icons.Default.ScreenRotation, null, tint = Color.White)
+                    Icon(Icons.Default.ScreenRotation, "Rotate", tint = Color.White)
                 }
                 IconButton(onClick = { activity?.enterPiPMode() }) {
-                    Icon(Icons.Default.PictureInPicture, null, tint = Color.White)
+                    Icon(Icons.Default.PictureInPicture, "PiP", tint = Color.White)
                 }
             }
         }
@@ -225,7 +250,9 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
             }
             "image" -> {
                 val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-                Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                if (bitmap != null) {
+                    Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                }
             }
         }
     }
@@ -235,11 +262,12 @@ fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
 @Composable
 fun TabbedBrowserScreen() {
     var urlInput by rememberSaveable { mutableStateOf("https://www.google.com") }
-    var webView: WebView? by remember { mutableStateOf(null) }
+    var webViewInstance: WebView? by remember { mutableStateOf(null) }
     val activity = LocalContext.current as? MainActivity
 
-    BackHandler(enabled = webView?.canGoBack() == true) {
-        webView?.goBack()
+    // BROWSER BACK: Prevents closing the app if the web can go back
+    BackHandler(enabled = webViewInstance?.canGoBack() == true) {
+        webViewInstance?.goBack()
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -251,14 +279,14 @@ fun TabbedBrowserScreen() {
                 singleLine = true,
                 trailingIcon = {
                     IconButton(onClick = { 
-                        val url = if (urlInput.startsWith("http")) urlInput else "https://$urlInput"
-                        webView?.loadUrl(url) 
+                        val url = if (urlInput.contains("://")) urlInput else "https://$urlInput"
+                        webViewInstance?.loadUrl(url) 
                     }) {
                         Icon(Icons.Default.Search, "Go")
                     }
                 }
             )
-            IconButton(onClick = { webView?.reload() }) {
+            IconButton(onClick = { webViewInstance?.reload() }) {
                 Icon(Icons.Default.Refresh, "Reload")
             }
         }
@@ -274,9 +302,10 @@ fun TabbedBrowserScreen() {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     loadUrl(urlInput)
-                    webView = this
+                    webViewInstance = this
                 }
             },
+            update = { /* State maintained via saveState/restoreState in Navigation */ },
             modifier = Modifier.weight(1f)
         )
     }
@@ -291,6 +320,6 @@ fun installApk(context: Context, file: File) {
         }
         context.startActivity(intent)
     } catch (e: Exception) {
-        Toast.makeText(context, "Failed to open APK", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Cannot open APK", Toast.LENGTH_SHORT).show()
     }
 }
