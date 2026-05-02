@@ -144,7 +144,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restoreState() {
-        // Restore File Manager Path
         val savedPath = prefs.getString(KEY_CURRENT_PATH, null)
         if (savedPath!= null) {
             val dir = File(savedPath)
@@ -152,7 +151,6 @@ class MainActivity : AppCompatActivity() {
         }
         loadFiles(currentPath)
 
-        // Restore Tabs
         val tabUrls = prefs.getStringSet(KEY_TAB_URLS, null)
         if (tabUrls!= null && tabUrls.isNotEmpty()) {
             tabUrls.forEach { addNewTab(it, false) }
@@ -162,7 +160,6 @@ class MainActivity : AppCompatActivity() {
             addNewTab("https://moviebox.ph", true)
         }
 
-        // Restore Last Section
         isFileManagerActive = prefs.getBoolean(KEY_IS_FILE_MANAGER, true)
         if (isFileManagerActive) {
             switchToFileManager()
@@ -298,7 +295,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fileListView.adapter = adapter
-        fileListView.setOnItemClickListener { parent, view, position, id ->
+        fileListView.setOnItemClickListener { adapterView, view, position, id ->
             val file = files[position]
             when {
                 file.isDirectory -> loadFiles(file)
@@ -309,7 +306,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        fileListView.setOnItemLongClickListener { parent, view, position, id ->
+        fileListView.setOnItemLongClickListener { adapterView, view, position, id ->
             showFileOptions(files[position])
             true
         }
@@ -327,7 +324,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
          .setTitle("New Folder")
          .setView(input)
-         .setPositiveButton("Create") { dialog, which ->
+         .setPositiveButton("Create") { dialogInterface, i ->
                 val name = input.text.toString().trim()
                 if (name.isNotEmpty()) {
                     val newFolder = File(currentPath, name)
@@ -347,7 +344,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
          .setTitle(file.name)
-         .setItems(options.toTypedArray()) { dialog, which ->
+         .setItems(options.toTypedArray()) { dialogInterface, which ->
                 when (options[which]) {
                     "Delete" -> deleteFile(file)
                     "Rename" -> renameFile(file)
@@ -362,7 +359,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
          .setTitle("Delete?")
          .setMessage("Delete ${file.name}?")
-         .setPositiveButton("Yes") { dialog, which ->
+         .setPositiveButton("Yes") { dialogInterface, i ->
                 if (file.deleteRecursively()) {
                     toast("Deleted")
                     loadFiles(currentPath)
@@ -377,7 +374,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
          .setTitle("Rename")
          .setView(input)
-         .setPositiveButton("OK") { dialog, which ->
+         .setPositiveButton("OK") { dialogInterface, i ->
                 val newName = input.text.toString().trim()
                 if (newName.isNotEmpty() && file.renameTo(File(file.parent, newName))) {
                     toast("Renamed")
@@ -541,7 +538,6 @@ class MainActivity : AppCompatActivity() {
             layoutParams = ViewGroup.LayoutParams(-1, -1)
         }
 
-        // Tab Bar
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#2A2A2A"))
@@ -566,7 +562,6 @@ class MainActivity : AppCompatActivity() {
         tabBar.addView(tabScroll)
         tabBar.addView(newTabBtn)
 
-        // URL Bar + Progress
         val urlLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
@@ -581,7 +576,7 @@ class MainActivity : AppCompatActivity() {
             hint = "Enter URL"
             layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
             setSingleLine(true)
-            setOnEditorActionListener { v, actionId, event ->
+            setOnEditorActionListener { textView, actionId, keyEvent ->
                 loadUrlInCurrentTab()
                 true
             }
@@ -604,7 +599,6 @@ class MainActivity : AppCompatActivity() {
         urlLayout.addView(urlBarLayout)
         urlLayout.addView(progressBar)
 
-        // WebView Container
         webContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         }
