@@ -5,49 +5,314 @@ import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
-import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
 import android.util.Rational
+import android.view.*
 import android.webkit.*
-import android.widget.Toast
+import android.widget.*
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.*
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.zIndex
+import androidx.activity.OnBackPressedCallback
 import androidx.core.content.FileProvider
-import androidx.navigation.NavGraph.Companion.findStartDestination
-import androidx.navigation.compose.*
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.tabs.TabLayout
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var rootLayout: FrameLayout
+    private lateinit var bottomNav: BottomNavigationView
+    private lateinit var fileSection: LinearLayout
+    private lateinit var browserSection: LinearLayout
+    private lateinit var playerSection: FrameLayout
+    
+    // Browser States
+    private lateinit var tabLayout: TabLayout
+    private lateinit var webContainer: FrameLayout
+    private val webViews = mutableListOf<WebView>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         checkPermissions()
-        setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                MainApp()
+        setupUI()
+        
+        // Default View
+        showSection("files")
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (playerSection.visibility == View.VISIBLE) {
+                    closePlayer()
+                } else if (browserSection.visibility == View.VISIBLE) {
+                    val currentWeb = webViews.getOrNull(tabLayout.selectedTabPosition)
+                    if (currentWeb?.canGoBack() == true) {
+                        currentWeb.goBack()
+                    } else {
+                        showSection("files")
+                    }
+                } else {
+                    finish()
+                }
+            }
+        })
+    }
+
+    private fun setupUI() {
+        rootLayout = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+        }
+
+        // 1. File Section
+        fileSection = createFileSection()
+        
+        // 2. Browser Section
+        browserSection = createBrowserSection()
+        
+        // 3. Player Section (Full Screen)
+        playerSection = FrameLayout(this).apply {
+            visibility = View.GONE
+            setBackgroundColor(Color.BLACK)
+        }
+
+        // 4. Bottom Navigation
+        bottomNav = BottomNavigationView(this).apply {
+            setBackgroundColor(Color.parseColor("#121212"))
+            val menuFiles = menu.add(0, 1, 0, "Files")
+            val menuBrowser = menu.add(0, 2, 1, "Browser")
+            
+            setOnItemSelectedListener { item ->
+                when (item.itemId) {
+                    1 -> showSection("files")
+                    2 -> showSection("browser")
+                }
+                true
             }
         }
+
+        val navParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply { gravity = Gravity.BOTTOM }
+
+        rootLayout.addView(fileSection)
+        rootLayout.addView(browserSection)
+        rootLayout.addView(playerSection)
+        rootLayout.addView(bottomNav, navParams)
+
+        setContentView(rootLayout)
+    }
+
+    private fun showSection(type: String) {
+        fileSection.visibility = if (type == "files") View.VISIBLE else View.GONE
+        browserSection.visibility = if (type == "browser") View.VISIBLE else View.GONE
+        bottomNav.visibility = View.VISIBLE
+        
+        if (type == "files") refreshFileList(Environment.getExternalStorageDirectory())
+    }
+
+    // --- File Manager Logic ---
+    private fun createFileSection(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val title = TextView(this@MainActivity).apply {
+                text = "File Manager"
+                textSize = 20f
+                setTextColor(Color.WHITE)
+                setPadding(40, 40, 40, 40)
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            addView(title)
+            
+            val listView = ListView(this@MainActivity).apply {
+                id = View.generateViewId()
+                tag = "file_list"
+            }
+            addView(listView)
+        }
+    }
+
+    private fun refreshFileList(dir: File) {
+        val listView = fileSection.findViewWithTag<ListView>("file_list")
+        val files = dir.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList()
+        
+        val adapter = object : ArrayAdapter<File>(this, android.R.layout.simple_list_item_1, files) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent) as TextView
+                val file = getItem(position)
+                view.text = file?.name
+                view.setTextColor(if (file?.isDirectory == true) Color.CYAN else Color.WHITE)
+                return view
+            }
+        }
+
+        listView.adapter = adapter
+        listView.setOnItemClickListener { _, _, position, _ ->
+            val file = files[position]
+            if (file.isDirectory) refreshFileList(file)
+            else openFile(file)
+        }
+        
+        listView.setOnItemLongClickListener { _, _, position, _ ->
+            val file = files[position]
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Delete")
+                .setMessage("Delete ${file.name}?")
+                .setPositiveButton("Yes") { _, _ -> 
+                    file.deleteRecursively()
+                    refreshFileList(dir)
+                }
+                .setNegativeButton("No", null)
+                .show()
+            true
+        }
+    }
+
+    // --- Browser Logic (Multi-Tab) ---
+    private fun createBrowserSection(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+
+            // Tab Bar
+            tabLayout = TabLayout(this@MainActivity).apply {
+                setBackgroundColor(Color.parseColor("#1F1F1F"))
+                setTabTextColors(Color.GRAY, Color.WHITE)
+                setSelectedTabIndicatorColor(Color.RED)
+                tabMode = TabLayout.MODE_SCROLLABLE
+            }
+            
+            val controls = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(10, 10, 10, 10)
+                
+                val urlInput = EditText(this@MainActivity).apply {
+                    hint = "Enter URL"
+                    setHintTextColor(Color.GRAY)
+                    setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(0, 120, 1f)
+                    tag = "url_input"
+                }
+                
+                val btnAdd = Button(this@MainActivity).apply {
+                    text = "+"
+                    setOnClickListener { addNewTab("https://moviebox.ph") }
+                }
+
+                val btnGo = Button(this@MainActivity).apply {
+                    text = "Go"
+                    setOnClickListener {
+                        val url = urlInput.text.toString()
+                        val finalUrl = if (url.contains("://")) url else "https://$url"
+                        webViews[tabLayout.selectedTabPosition].loadUrl(finalUrl)
+                    }
+                }
+                
+                addView(urlInput)
+                addView(btnGo)
+                addView(btnAdd)
+            }
+
+            webContainer = FrameLayout(this@MainActivity)
+
+            addView(tabLayout)
+            addView(controls)
+            addView(webContainer)
+
+            tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+                override fun onTabSelected(tab: TabLayout.Tab?) {
+                    updateWebVisibility(tab?.position ?: 0)
+                }
+                override fun onTabUnselected(tab: TabLayout.Tab?) {}
+                override fun onTabReselected(tab: TabLayout.Tab?) {}
+            })
+
+            addNewTab("https://moviebox.ph")
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun addNewTab(url: String) {
+        val webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                loadWithOverviewMode = true
+                useWideViewPort = true
+            }
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    val index = webViews.indexOf(view)
+                    if (index != -1) tabLayout.getTabAt(index)?.text = view?.title ?: "Tab"
+                }
+            }
+            loadUrl(url)
+            visibility = View.GONE
+        }
+
+        webViews.add(webView)
+        webContainer.addView(webView)
+        
+        val newTab = tabLayout.newTab().setText("New Tab")
+        tabLayout.addTab(newTab)
+        newTab.select()
+    }
+
+    private fun updateWebVisibility(index: Int) {
+        webViews.forEachIndexed { i, webView ->
+            webView.visibility = if (i == index) View.VISIBLE else View.GONE
+        }
+    }
+
+    // --- Player Logic (Full Screen Fix) ---
+    private fun openFile(file: File) {
+        val ext = file.extension.lowercase()
+        if (ext == "mp4" || ext == "mkv") {
+            bottomNav.visibility = View.GONE
+            fileSection.visibility = View.GONE
+            playerSection.visibility = View.VISIBLE
+            playerSection.removeAllViews()
+
+            val videoView = VideoView(this).apply {
+                setVideoPath(file.absolutePath)
+                val mc = MediaController(this@MainActivity)
+                mc.setAnchorView(this)
+                setMediaController(mc)
+                
+                // Full Frame Center Fix
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
+            }
+            
+            playerSection.addView(videoView)
+            videoView.start()
+        } else if (ext == "apk") {
+            installApk(file)
+        }
+    }
+
+    private fun closePlayer() {
+        playerSection.removeAllViews()
+        playerSection.visibility = View.GONE
+        showSection("files")
+    }
+
+    private fun installApk(file: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.provider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        startActivity(intent)
     }
 
     private fun checkPermissions() {
@@ -58,309 +323,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun enterPiPMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .build()
-            enterPictureInPictureMode(params)
-        }
-    }
-    
-    fun toggleOrientation() {
-        requestedOrientation = if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        }
-    }
-}
-
-@Composable
-fun MainApp() {
-    val navController = rememberNavController()
-    var isFullScreenPlayerOpen by remember { mutableStateOf(false) }
-    
-    Scaffold(
-        bottomBar = {
-            if (!isFullScreenPlayerOpen) {
-                NavigationBar {
-                    val navBackStackEntry by navController.currentBackStackEntryAsState()
-                    val currentRoute = navBackStackEntry?.destination?.route
-
-                    listOf("files" to Icons.Default.Storage, "browser" to Icons.Default.Language).forEach { (route, icon) ->
-                        NavigationBarItem(
-                            icon = { Icon(icon, route) },
-                            label = { Text(route.replaceFirstChar { it.uppercase() }) },
-                            selected = currentRoute == route,
-                            onClick = {
-                                if (currentRoute != route) {
-                                    navController.navigate(route) {
-                                        popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-        }
-    ) { padding ->
-        NavHost(
-            navController = navController, 
-            startDestination = "files", 
-            modifier = Modifier.padding(if (isFullScreenPlayerOpen) PaddingValues(0.dp) else padding)
-        ) {
-            composable("files") { 
-                FileManagerScreen(onPlayerStateChange = { isFullScreenPlayerOpen = it }) 
-            }
-            composable("browser") { TabbedBrowserScreen() }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-fun FileManagerScreen(onPlayerStateChange: (Boolean) -> Unit) {
-    val context = LocalContext.current
-    var currentPathString by rememberSaveable { mutableStateOf(Environment.getExternalStorageDirectory().absolutePath) }
-    val currentPath = File(currentPathString)
-    
-    var files by remember { mutableStateOf(emptyList<File>()) }
-    LaunchedEffect(currentPathString) {
-        files = currentPath.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-    }
-
-    var viewingFile by remember { mutableStateOf<File?>(null) }
-    var fileType by remember { mutableStateOf("") }
-    var fileToDelete by remember { mutableStateOf<File?>(null) }
-
-    if (fileToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { fileToDelete = null },
-            title = { Text("Delete Item") },
-            text = { Text("Are you sure you want to delete ${fileToDelete?.name}?") },
-            confirmButton = {
-                Button(colors = ButtonDefaults.buttonColors(containerColor = Color.Red), onClick = {
-                    if (fileToDelete?.deleteRecursively() == true) {
-                        files = files.filter { it != fileToDelete }
-                    }
-                    fileToDelete = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { fileToDelete = null }) { Text("Cancel") } }
-        )
-    }
-
-    if (viewingFile != null) {
-        onPlayerStateChange(true)
-        InternalPlayer(viewingFile!!, fileType) { 
-            viewingFile = null
-            onPlayerStateChange(false)
-        }
-    } else {
-        BackHandler(enabled = currentPathString != Environment.getExternalStorageDirectory().absolutePath) {
-            currentPathString = currentPath.parentFile?.absolutePath ?: currentPathString
-        }
-
-        Column {
-            TopAppBar(title = { Text(if (currentPathString == Environment.getExternalStorageDirectory().absolutePath) "Files" else currentPath.name) })
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(files) { file ->
-                    ListItem(
-                        headlineContent = { Text(file.name) },
-                        leadingContent = {
-                            val icon = when {
-                                file.isDirectory -> Icons.Default.Folder
-                                file.extension.lowercase() in listOf("mp4", "mkv") -> Icons.Default.PlayCircle
-                                else -> Icons.Default.FileOpen
-                            }
-                            Icon(icon, null, tint = if (file.isDirectory) Color.Cyan else Color.White)
-                        },
-                        modifier = Modifier.combinedClickable(
-                            onClick = {
-                                if (file.isDirectory) currentPathString = file.absolutePath
-                                else {
-                                    val ext = file.extension.lowercase()
-                                    if (ext in listOf("mp4", "mkv")) { viewingFile = file; fileType = "video" }
-                                    else if (ext in listOf("jpg", "png", "jpeg")) { viewingFile = file; fileType = "image" }
-                                }
-                            },
-                            onLongClick = { fileToDelete = file }
-                        )
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun InternalPlayer(file: File, type: String, onBack: () -> Unit) {
-    val activity = LocalContext.current as? MainActivity
-    BackHandler { onBack() }
-
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (type == "video") {
-            Row(Modifier.align(Alignment.TopEnd).padding(16.dp).zIndex(2f)) {
-                IconButton(onClick = { activity?.toggleOrientation() }) { Icon(Icons.Default.ScreenRotation, null, tint = Color.White) }
-                IconButton(onClick = { activity?.enterPiPMode() }) { Icon(Icons.Default.PictureInPicture, null, tint = Color.White) }
-                IconButton(onClick = { onBack() }) { Icon(Icons.Default.Close, null, tint = Color.White) }
-            }
-            AndroidView(
-                factory = { ctx ->
-                    android.widget.VideoView(ctx).apply {
-                        setVideoPath(file.absolutePath)
-                        setMediaController(android.widget.MediaController(ctx).apply { setAnchorView(this@apply) })
-                        start()
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-            if (bitmap != null) Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-            IconButton(onClick = { onBack() }, Modifier.align(Alignment.TopEnd).padding(16.dp)) {
-                Icon(Icons.Default.Close, null, tint = Color.White)
-            }
-        }
-    }
-}
-
-data class BrowserTab(val url: String, val title: String = "New Tab")
-
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-fun TabbedBrowserScreen() {
-    var tabs by rememberSaveable { mutableStateOf(listOf(BrowserTab("https://www.google.com"))) }
-    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
-    var urlInput by remember { mutableStateOf(tabs[selectedTabIndex].url) }
-    var isLoading by remember { mutableStateOf(false) }
-    var progress by remember { mutableFloatStateOf(0f) }
-    
-    val webViews = remember { mutableMapOf<Int, WebView>() }
-
-    Column(Modifier.fillMaxSize()) {
-        ScrollableTabRow(
-            selectedTabIndex = selectedTabIndex,
-            edgePadding = 0.dp,
-            containerColor = MaterialTheme.colorScheme.surface,
-            divider = {}
-        ) {
-            tabs.forEachIndexed { index, tab ->
-                Tab(
-                    selected = selectedTabIndex == index,
-                    onClick = { 
-                        selectedTabIndex = index
-                        urlInput = tabs[index].url
-                    },
-                    text = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.widthIn(max = 80.dp))
-                            if (tabs.size > 1) {
-                                IconButton(onClick = {
-                                    val newTabs = tabs.toMutableList()
-                                    newTabs.removeAt(index)
-                                    tabs = newTabs
-                                    if (selectedTabIndex >= newTabs.size) selectedTabIndex = newTabs.size - 1
-                                    urlInput = tabs[selectedTabIndex].url
-                                }, Modifier.size(18.dp)) {
-                                    Icon(Icons.Default.Close, null, modifier = Modifier.size(12.dp))
-                                }
-                            }
-                        }
-                    }
-                )
-            }
-            IconButton(onClick = {
-                tabs = tabs + BrowserTab("https://www.google.com")
-                selectedTabIndex = tabs.size - 1
-                urlInput = "https://www.google.com"
-            }) { Icon(Icons.Default.Add, null) }
-        }
-
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextField(
-                value = urlInput,
-                onValueChange = { urlInput = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                shape = RoundedCornerShape(24.dp),
-                colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
-                trailingIcon = {
-                    IconButton(onClick = { 
-                        val finalUrl = if (urlInput.contains("://")) urlInput else "https://$urlInput"
-                        webViews[selectedTabIndex]?.loadUrl(finalUrl)
-                    }) { Icon(Icons.Default.Search, null) }
-                }
-            )
-            IconButton(onClick = { webViews[selectedTabIndex]?.reload() }) { Icon(Icons.Default.Refresh, null) }
-        }
-
-        if (isLoading) LinearProgressIndicator(progress = progress, modifier = Modifier.fillMaxWidth())
-
-        Box(Modifier.weight(1f)) {
-            tabs.forEachIndexed { index, tab ->
-                if (index == selectedTabIndex) {
-                    AndroidView(
-                        factory = { ctx ->
-                            WebView(ctx).apply {
-                                webViewClient = object : WebViewClient() {
-                                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                                        isLoading = true
-                                    }
-                                    override fun onPageFinished(view: WebView?, url: String?) {
-                                        isLoading = false
-                                        urlInput = url ?: ""
-                                        val newTabs = tabs.toMutableList()
-                                        newTabs[index] = BrowserTab(url ?: "", view?.title ?: "Tab")
-                                        tabs = newTabs
-                                    }
-                                }
-                                webChromeClient = object : WebChromeClient() {
-                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                        progress = newProgress / 100f
-                                    }
-                                }
-                                settings.apply {
-                                    javaScriptEnabled = true
-                                    domStorageEnabled = true
-                                    databaseEnabled = true
-                                    setSupportMultipleWindows(true)
-                                    javaScriptCanOpenWindowsAutomatically = true
-                                    allowFileAccess = true
-                                    useWideViewPort = true
-                                    loadWithOverviewMode = true
-                                    // Desktop User Agent for Gemini/Google Support
-                                    userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                                }
-                                loadUrl(tab.url)
-                                webViews[index] = this
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
-        }
-    }
-
-    BackHandler(enabled = webViews[selectedTabIndex]?.canGoBack() == true) {
-        webViews[selectedTabIndex]?.goBack()
-    }
-}
-
-fun installApk(context: Context, file: File) {
-    try {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(intent)
-    } catch (e: Exception) {
-        Toast.makeText(context, "Cannot open APK", Toast.LENGTH_SHORT).show()
+    companion object {
+        const val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
     }
 }
