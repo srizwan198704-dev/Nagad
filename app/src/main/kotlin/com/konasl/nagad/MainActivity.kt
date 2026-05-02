@@ -33,6 +33,8 @@ class MainActivity : ComponentActivity() {
     private val webViews = mutableListOf<WebView>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // থিম এরর ফিক্স করার জন্য এটি সবার আগে থাকতে হবে
+        setTheme(androidx.appcompat.R.style.Theme_AppCompat_DayNight_NoActionBar)
         super.onCreate(savedInstanceState)
         
         try {
@@ -57,8 +59,7 @@ class MainActivity : ComponentActivity() {
                 }
             })
         } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "Critical Error: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Setup Error: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -68,6 +69,7 @@ class MainActivity : ComponentActivity() {
             layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         }
 
+        // ফাইল ও ব্রাউজার সেকশন তৈরি
         fileSection = createFileSection()
         browserSection = createBrowserSection()
         playerSection = FrameLayout(this).apply {
@@ -75,11 +77,16 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
         }
 
+        // বটম নেভিগেশন ফিক্স
         bottomNav = BottomNavigationView(this).apply {
             setBackgroundColor(Color.parseColor("#121212"))
+            // আইকন হিসেবে অ্যান্ড্রয়েড সিস্টেম ড্রয়েবল ব্যবহার
             menu.add(Menu.NONE, 1, 0, "Files").setIcon(android.R.drawable.ic_menu_save)
             menu.add(Menu.NONE, 2, 1, "Browser").setIcon(android.R.drawable.ic_menu_search)
             
+            itemIconTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+            itemTextColor = android.content.res.ColorStateList.valueOf(Color.WHITE)
+
             setOnItemSelectedListener { item ->
                 when (item.itemId) {
                     1 -> showSection("files")
@@ -105,26 +112,20 @@ class MainActivity : ComponentActivity() {
         fileSection.visibility = if (type == "files") View.VISIBLE else View.GONE
         browserSection.visibility = if (type == "browser") View.VISIBLE else View.GONE
         bottomNav.visibility = View.VISIBLE
-        
-        if (type == "files") {
-            val state = Environment.getExternalStorageState()
-            if (Environment.MEDIA_MOUNTED == state || Environment.MEDIA_MOUNTED_READ_ONLY == state) {
-                refreshFileList(Environment.getExternalStorageDirectory())
-            }
-        }
+        if (type == "files") refreshFileList(Environment.getExternalStorageDirectory())
     }
 
     private fun createFileSection(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { 
-                setMargins(0, 0, 0, 160) 
+                setMargins(0, 0, 0, 160) // বটম বারের জন্য জায়গা রাখা
             }
             val title = TextView(this@MainActivity).apply {
-                text = "File Manager"
-                textSize = 20f
+                text = "My Files"
+                textSize = 22f
                 setTextColor(Color.WHITE)
-                setPadding(40, 40, 40, 40)
+                setPadding(40, 50, 40, 30)
                 typeface = Typeface.DEFAULT_BOLD
             }
             addView(title)
@@ -146,6 +147,7 @@ class MainActivity : ComponentActivity() {
                 val f = getItem(position)
                 tv.text = f?.name
                 tv.setTextColor(if (f?.isDirectory == true) Color.CYAN else Color.WHITE)
+                tv.setPadding(40, 30, 40, 30)
                 return tv
             }
         }
@@ -175,8 +177,8 @@ class MainActivity : ComponentActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding(10, 10, 10, 10)
                 val urlInput = EditText(this@MainActivity).apply {
-                    hint = "Enter URL"; setTextColor(Color.WHITE)
-                    tag = "url_field"
+                    hint = "https://"; setTextColor(Color.WHITE)
+                    setHintTextColor(Color.GRAY)
                     layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
                 }
                 val btnAdd = Button(this@MainActivity).apply { text = "+" }
@@ -184,9 +186,8 @@ class MainActivity : ComponentActivity() {
                 val btnGo = Button(this@MainActivity).apply { text = "Go" }
                 btnGo.setOnClickListener {
                     val url = urlInput.text.toString()
-                    webViews.getOrNull(tabLayout.selectedTabPosition)?.loadUrl(
-                        if (url.contains("://")) url else "https://$url"
-                    )
+                    val finalUrl = if (url.startsWith("http")) url else "https://$url"
+                    webViews.getOrNull(tabLayout.selectedTabPosition)?.loadUrl(finalUrl)
                 }
                 addView(urlInput); addView(btnGo); addView(btnAdd)
             }
@@ -212,6 +213,8 @@ class MainActivity : ComponentActivity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
+                databaseEnabled = true
+                // Desktop User Agent
                 userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             webViewClient = object : WebViewClient() {
@@ -236,7 +239,7 @@ class MainActivity : ComponentActivity() {
 
     private fun openFile(file: File) {
         val ext = file.extension.lowercase()
-        if (ext == "mp4" || ext == "mkv") {
+        if (ext in listOf("mp4", "mkv", "3gp", "webm")) {
             bottomNav.visibility = View.GONE
             fileSection.visibility = View.GONE
             playerSection.visibility = View.VISIBLE
@@ -247,6 +250,7 @@ class MainActivity : ComponentActivity() {
                 val mc = MediaController(this@MainActivity)
                 mc.setAnchorView(this)
                 setMediaController(mc)
+                // Landscape Frame Fix
                 layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.CENTER)
             }
             playerSection.addView(videoView)
@@ -271,7 +275,7 @@ class MainActivity : ComponentActivity() {
             }
             startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(this, "Error installing APK", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Cannot install APK", Toast.LENGTH_SHORT).show()
         }
     }
 
