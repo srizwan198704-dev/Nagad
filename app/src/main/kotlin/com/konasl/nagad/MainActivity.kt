@@ -21,6 +21,7 @@ import android.provider.Settings
 import android.view.*
 import android.webkit.*
 import android.widget.*
+import android.widget.VideoView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -75,7 +76,7 @@ class MainActivity : AppCompatActivity() {
     private val storagePermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (Environment.isExternalStorageManager()) initUI()
-            else toast("Storage permission লাগবে")
+            else toast("Storage permission required")
         }
     }
 
@@ -93,7 +94,7 @@ class MainActivity : AppCompatActivity() {
                 storagePermission.launch(intent)
             } else initUI()
         } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)!= PackageManager.PERMISSION_GRANTED) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE), 100)
             } else initUI()
         }
@@ -103,22 +104,23 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 100 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             initUI()
-        } else toast("Permission লাগবে ভাই")
+        } else toast("Permission required")
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     private fun initUI() {
         originalSystemUiVisibility = window.decorView.systemUiVisibility
 
         rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(-1, -1)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             setBackgroundColor(Color.parseColor("#F5F5F5"))
         }
 
         tabLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#1A1A1A"))
-            layoutParams = LinearLayout.LayoutParams(-1, dp(50))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
         }
 
         val fileTab = createTabButton("Files", true) { switchToFileManager() }
@@ -127,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         tabLayout.addView(browserTab)
 
         contentFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, -1)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
         fileManagerView = createFileManagerView()
@@ -145,14 +147,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun restoreState() {
         val savedPath = prefs.getString(KEY_CURRENT_PATH, null)
-        if (savedPath!= null) {
+        if (savedPath != null) {
             val dir = File(savedPath)
             if (dir.exists() && dir.isDirectory) currentPath = dir
         }
         loadFiles(currentPath)
 
         val tabUrls = prefs.getStringSet(KEY_TAB_URLS, null)
-        if (tabUrls!= null && tabUrls.isNotEmpty()) {
+        if (tabUrls != null && tabUrls.isNotEmpty()) {
             tabUrls.forEach { addNewTab(it, false) }
             currentTabIndex = prefs.getInt(KEY_CURRENT_TAB, 0).coerceIn(0, webTabs.size - 1)
             switchTab(currentTabIndex)
@@ -186,7 +188,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveState() {
         prefs.edit().apply {
             putString(KEY_CURRENT_PATH, currentPath.absolutePath)
-            putStringSet(KEY_TAB_URLS, webTabs.map { it.webView.url?: "about:blank" }.toSet())
+            putStringSet(KEY_TAB_URLS, webTabs.map { it.webView.url?.toString() ?: "about:blank" }.toSet())
             putInt(KEY_CURRENT_TAB, currentTabIndex)
             putBoolean(KEY_IS_FILE_MANAGER, isFileManagerActive)
             apply()
@@ -199,7 +201,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             typeface = Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             setBackgroundColor(if (selected) Color.parseColor("#333333") else Color.TRANSPARENT)
             setOnClickListener {
                 for (i in 0 until tabLayout.childCount) {
@@ -215,12 +217,12 @@ class MainActivity : AppCompatActivity() {
     private fun createFileManagerView(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(-1, -1)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(8))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
             setBackgroundColor(Color.WHITE)
         }
 
@@ -231,7 +233,7 @@ class MainActivity : AppCompatActivity() {
 
         pathText = TextView(this).apply {
             text = "/"
-            layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), 0, dp(8), 0)
             ellipsize = android.text.TextUtils.TruncateAt.START
@@ -254,7 +256,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fileListView = ListView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
             divider = null
         }
 
@@ -269,7 +271,7 @@ class MainActivity : AppCompatActivity() {
         pathText.text = dir.absolutePath.replace(Environment.getExternalStorageDirectory().absolutePath, "/storage")
         storageInfo.text = "Free: ${getSize(dir.freeSpace)} | Total: ${getSize(dir.totalSpace)}"
 
-        val files = dir.listFiles()?.sortedWith(compareBy({!it.isDirectory }, { it.name.lowercase() }))?: emptyList()
+        val files = dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
 
         val adapter = object : ArrayAdapter<File>(this, android.R.layout.simple_list_item_2, android.R.id.text1, files) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
@@ -295,7 +297,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fileListView.adapter = adapter
-        fileListView.setOnItemClickListener { adapterView, view, position, id ->
+        fileListView.setOnItemClickListener { _, _, position, _ ->
             val file = files[position]
             when {
                 file.isDirectory -> loadFiles(file)
@@ -306,7 +308,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        fileListView.setOnItemLongClickListener { adapterView, view, position, id ->
+        fileListView.setOnItemLongClickListener { _, _, position, _ ->
             showFileOptions(files[position])
             true
         }
@@ -314,7 +316,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun goUp() {
         val parent = currentPath.parentFile
-        if (parent!= null && parent.canRead() && parent.absolutePath.startsWith(Environment.getExternalStorageDirectory().absolutePath)) {
+        if (parent != null && parent.canRead() && parent.absolutePath.startsWith(Environment.getExternalStorageDirectory().absolutePath)) {
             loadFiles(parent)
         }
     }
@@ -322,9 +324,9 @@ class MainActivity : AppCompatActivity() {
     private fun createNewFolder() {
         val input = EditText(this)
         AlertDialog.Builder(this)
-         .setTitle("New Folder")
-         .setView(input)
-         .setPositiveButton("Create") { dialogInterface, i ->
+            .setTitle("New Folder")
+            .setView(input)
+            .setPositiveButton("Create") { _, _ ->
                 val name = input.text.toString().trim()
                 if (name.isNotEmpty()) {
                     val newFolder = File(currentPath, name)
@@ -334,8 +336,8 @@ class MainActivity : AppCompatActivity() {
                     } else toast("Failed")
                 }
             }
-         .setNegativeButton("Cancel", null)
-         .show()
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun showFileOptions(file: File) {
@@ -343,8 +345,8 @@ class MainActivity : AppCompatActivity() {
         if (file.name.endsWith(".pdf", true)) options.add(1, "PDF to JPG")
 
         AlertDialog.Builder(this)
-         .setTitle(file.name)
-         .setItems(options.toTypedArray()) { dialogInterface, which ->
+            .setTitle(file.name)
+            .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
                     "Delete" -> deleteFile(file)
                     "Rename" -> renameFile(file)
@@ -352,37 +354,37 @@ class MainActivity : AppCompatActivity() {
                     "Details" -> showDetails(file)
                 }
             }
-         .show()
+            .show()
     }
 
     private fun deleteFile(file: File) {
         AlertDialog.Builder(this)
-         .setTitle("Delete?")
-         .setMessage("Delete ${file.name}?")
-         .setPositiveButton("Yes") { dialogInterface, i ->
+            .setTitle("Delete?")
+            .setMessage("Delete ${file.name}?")
+            .setPositiveButton("Yes") { _, _ ->
                 if (file.deleteRecursively()) {
                     toast("Deleted")
                     loadFiles(currentPath)
                 }
             }
-         .setNegativeButton("No", null)
-         .show()
+            .setNegativeButton("No", null)
+            .show()
     }
 
     private fun renameFile(file: File) {
         val input = EditText(this).apply { setText(file.name) }
         AlertDialog.Builder(this)
-         .setTitle("Rename")
-         .setView(input)
-         .setPositiveButton("OK") { dialogInterface, i ->
+            .setTitle("Rename")
+            .setView(input)
+            .setPositiveButton("OK") { _, _ ->
                 val newName = input.text.toString().trim()
                 if (newName.isNotEmpty() && file.renameTo(File(file.parent, newName))) {
                     toast("Renamed")
                     loadFiles(currentPath)
                 }
             }
-         .setNegativeButton("Cancel", null)
-         .show()
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun showDetails(file: File) {
@@ -401,7 +403,7 @@ class MainActivity : AppCompatActivity() {
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val layout = FrameLayout(this)
         val videoView = VideoView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(-1, -1, Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER)
             setVideoPath(file.absolutePath)
             setOnPreparedListener { mp ->
                 mp.isLooping = true
@@ -413,7 +415,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#AA000000"))
             setTextColor(Color.WHITE)
             layoutParams = FrameLayout.LayoutParams(dp(40), dp(40), Gravity.TOP or Gravity.END).apply {
-                setMargins(dp(16), dp(16))
+                setMargins(dp(16), dp(16), 0, 0)
             }
             setOnClickListener { dialog.dismiss() }
         }
@@ -429,15 +431,15 @@ class MainActivity : AppCompatActivity() {
             val scrollView = ScrollView(this)
             val textView = TextView(this).apply {
                 this.text = text
-                setPadding(dp(16), dp(16))
+                setPadding(dp(16), dp(16), dp(16), dp(16))
                 setTextIsSelectable(true)
             }
             scrollView.addView(textView)
             AlertDialog.Builder(this)
-             .setTitle(file.name)
-             .setView(scrollView)
-             .setPositiveButton("Close", null)
-             .show()
+                .setTitle(file.name)
+                .setView(scrollView)
+                .setPositiveButton("Close", null)
+                .show()
         } catch (e: Exception) {
             toast("Error: ${e.message}")
         }
@@ -457,12 +459,12 @@ class MainActivity : AppCompatActivity() {
             val topBar = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setBackgroundColor(Color.BLACK)
-                setPadding(dp(8), dp(8))
+                setPadding(dp(8), dp(8), dp(8), dp(8))
             }
             val titleText = TextView(this).apply {
                 text = "${file.name} - 1/$pageCount"
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
             val closeBtn = Button(this).apply {
                 text = "X"
@@ -472,7 +474,7 @@ class MainActivity : AppCompatActivity() {
             topBar.addView(closeBtn)
 
             val imageView = ImageView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
                 scaleType = ImageView.ScaleType.FIT_CENTER
             }
 
@@ -535,17 +537,17 @@ class MainActivity : AppCompatActivity() {
     private fun createBrowserView(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(-1, -1)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#2A2A2A"))
-            layoutParams = LinearLayout.LayoutParams(-1, dp(40))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
         }
 
         tabScroll = HorizontalScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
         }
         tabContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -569,14 +571,14 @@ class MainActivity : AppCompatActivity() {
 
         val urlBarLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(8), 0)
+            setPadding(dp(8), dp(8), dp(8), 0)
         }
 
         urlBar = EditText(this).apply {
             hint = "Enter URL"
-            layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             setSingleLine(true)
-            setOnEditorActionListener { textView, actionId, keyEvent ->
+            setOnEditorActionListener { _, _, _ ->
                 loadUrlInCurrentTab()
                 true
             }
@@ -591,7 +593,7 @@ class MainActivity : AppCompatActivity() {
         urlBarLayout.addView(goBtn)
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, dp(3))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
             max = 100
             visibility = View.GONE
         }
@@ -600,7 +602,7 @@ class MainActivity : AppCompatActivity() {
         urlLayout.addView(progressBar)
 
         webContainer = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
 
         layout.addView(tabBar)
@@ -612,7 +614,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun addNewTab(url: String, switch: Boolean = true) {
         val webView = WebView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(-1, -1)
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
@@ -635,7 +637,7 @@ class MainActivity : AppCompatActivity() {
                         progressBar.visibility = View.VISIBLE
                         urlBar.setText(url)
                     }
-                    if (idx!= -1) webTabs[idx].url = url?: ""
+                    if (idx != -1) webTabs[idx].url = url ?: ""
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -644,7 +646,7 @@ class MainActivity : AppCompatActivity() {
                         progressBar.visibility = View.GONE
                         urlBar.setText(url)
                     }
-                    if (idx!= -1) webTabs[idx].url = url?: ""
+                    if (idx != -1) webTabs[idx].url = url ?: ""
                 }
             }
 
@@ -658,14 +660,14 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onReceivedTitle(view: WebView?, title: String?) {
                     val index = webTabs.indexOfFirst { it.webView == view }
-                    if (index!= -1) {
-                        webTabs[index].title = title?: "New Tab"
+                    if (index != -1) {
+                        webTabs[index].title = title ?: "New Tab"
                         updateTabTitles()
                     }
                 }
 
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                    if (customView!= null) {
+                    if (customView != null) {
                         callback?.onCustomViewHidden()
                         return
                     }
@@ -674,7 +676,7 @@ class MainActivity : AppCompatActivity() {
                     originalOrientation = requestedOrientation
 
                     val decorView = window.decorView as FrameLayout
-                    decorView.addView(customView, FrameLayout.LayoutParams(-1, -1))
+                    decorView.addView(customView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                     window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -697,7 +699,7 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onShowFileChooser(webView: WebView?, filePathCallback: ValueCallback<Array<Uri>>?, fileChooserParams: FileChooserParams?): Boolean {
                     val intent = fileChooserParams?.createIntent()
-                    if (intent!= null) {
+                    if (intent != null) {
                         fileUploadCallback = filePathCallback
                         uploadMessage = null
                         fileChooserLauncher.launch(intent)
@@ -707,7 +709,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+            setDownloadListener { url, _, contentDisposition, mimetype, _ ->
                 val request = DownloadManager.Request(Uri.parse(url))
                 request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, contentDisposition, mimetype))
@@ -726,7 +728,7 @@ class MainActivity : AppCompatActivity() {
             text = "Tab ${webTabs.size}"
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#444444"))
-            layoutParams = LinearLayout.LayoutParams(dp(100), -1).apply { setMargins(dp(2), 0, dp(2), 0) }
+            layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(dp(2), 0, dp(2), 0) }
             setOnClickListener { switchTab(webTabs.indexOf(tab)) }
             setOnLongClickListener { closeTab(webTabs.indexOf(tab)); true }
         }
@@ -737,10 +739,10 @@ class MainActivity : AppCompatActivity() {
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
     private var uploadMessage: ValueCallback<Uri>? = null
     private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (fileUploadCallback!= null) {
+        if (fileUploadCallback != null) {
             fileUploadCallback?.onReceiveValue(if (result.resultCode == Activity.RESULT_OK) WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data) else null)
             fileUploadCallback = null
-        } else if (uploadMessage!= null) {
+        } else if (uploadMessage != null) {
             val data = result.data?.data
             uploadMessage?.onReceiveValue(data)
             uploadMessage = null
@@ -757,16 +759,17 @@ class MainActivity : AppCompatActivity() {
         updateTabTitles()
     }
 
-    private fun closeTab(index: Int) {
+    private fun closeTab(index: Int): Boolean {
         if (webTabs.size <= 1) {
             toast("Cannot close last tab")
-            return
+            return false
         }
         webTabs[index].webView.destroy()
         webTabs.removeAt(index)
         tabContainer.removeViewAt(index)
         if (currentTabIndex >= webTabs.size) currentTabIndex = webTabs.size - 1
         switchTab(currentTabIndex)
+        return true
     }
 
     private fun updateTabTitles() {
@@ -780,7 +783,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadUrlInCurrentTab() {
         var url = urlBar.text.toString().trim()
-        if (!url.startsWith("http://") &&!url.startsWith("https://")) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
             url = "https://$url"
         }
         webTabs[currentTabIndex].webView.loadUrl(url)
@@ -788,7 +791,7 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== COMMON ====================
     private fun switchToFileManager() {
-        if (customView!= null) return
+        if (customView != null) return
         isFileManagerActive = true
         fileManagerView.visibility = View.VISIBLE
         browserView.visibility = View.GONE
@@ -798,7 +801,9 @@ class MainActivity : AppCompatActivity() {
         isFileManagerActive = false
         fileManagerView.visibility = View.GONE
         browserView.visibility = View.VISIBLE
-        webTabs[currentTabIndex].webView.onResume()
+        if (currentTabIndex < webTabs.size) {
+            webTabs[currentTabIndex].webView.onResume()
+        }
     }
 
     private fun getSize(size: Long): String {
@@ -812,7 +817,7 @@ class MainActivity : AppCompatActivity() {
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     override fun onBackPressed() {
-        if (customView!= null) {
+        if (customView != null) {
             webTabs[currentTabIndex].webView.webChromeClient?.onHideCustomView()
             return
         }
@@ -823,7 +828,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 super.onBackPressed()
             }
-        } else if (currentPath.absolutePath!= Environment.getExternalStorageDirectory().absolutePath) {
+        } else if (currentPath.absolutePath != Environment.getExternalStorageDirectory().absolutePath) {
             goUp()
         } else {
             super.onBackPressed()
