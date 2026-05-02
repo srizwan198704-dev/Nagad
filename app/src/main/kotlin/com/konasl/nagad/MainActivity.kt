@@ -18,6 +18,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.graphics.Typeface
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
@@ -968,40 +970,40 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
-            // Zoomable ImageView via matrix
-            val imageView = object : androidx.appcompat.widget.AppCompatImageView(this) {
-                private val matrix = Matrix()
-                private var scaleFactor = 1f
-                private val scaleDetector = ScaleGestureDetector(context,
-                    object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                        override fun onScale(detector: ScaleGestureDetector): Boolean {
-                            scaleFactor *= detector.scaleFactor
-                            scaleFactor = scaleFactor.coerceIn(0.5f, 8f)
-                            matrix.setScale(scaleFactor, scaleFactor,
-                                detector.focusX, detector.focusY)
-                            imageMatrix = matrix
-                            return true
-                        }
-                    })
+            // Zoomable ImageView — state outside the anonymous object so lambda capture works
+            val zoomMatrix = Matrix()
+            var zoomScale = 1f
 
-                init {
-                    scaleType = ScaleType.FIT_CENTER
-                    setImageBitmap(bitmap)
-                }
-
-                override fun onTouchEvent(event: MotionEvent): Boolean {
-                    scaleDetector.onTouchEvent(event)
-                    if (event.pointerCount == 1 && !scaleDetector.isInProgress) {
-                        performClick()
-                    }
-                    return true
-                }
+            val imageView = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setImageBitmap(bitmap)
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
             }
-            imageView.layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                Gravity.CENTER
+
+            val scaleDetector = ScaleGestureDetector(this,
+                object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    override fun onScale(detector: ScaleGestureDetector): Boolean {
+                        zoomScale *= detector.scaleFactor
+                        zoomScale = zoomScale.coerceIn(0.5f, 8f)
+                        zoomMatrix.setScale(zoomScale, zoomScale, detector.focusX, detector.focusY)
+                        imageView.imageMatrix = zoomMatrix
+                        return true
+                    }
+                }
             )
+
+            imageView.setOnTouchListener { v, event ->
+                scaleDetector.onTouchEvent(event)
+                if (event.action == MotionEvent.ACTION_UP && !scaleDetector.isInProgress) {
+                    v.performClick()
+                }
+                true
+            }
+
             rootFrame.addView(imageView)
 
             // Top info overlay
