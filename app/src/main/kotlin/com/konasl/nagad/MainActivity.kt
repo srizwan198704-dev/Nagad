@@ -6,9 +6,11 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
 import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -20,6 +22,7 @@ import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
 import android.provider.Settings
+import android.util.Base64
 import android.view.*
 import android.webkit.*
 import android.widget.*
@@ -30,6 +33,9 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
@@ -61,7 +67,6 @@ class MainActivity : AppCompatActivity() {
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var originalOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-    private var originalSystemUiVisibility = 0
 
     // State Save
     private lateinit var prefs: SharedPreferences
@@ -71,28 +76,59 @@ class MainActivity : AppCompatActivity() {
     private val KEY_IS_FILE_MANAGER = "is_file_manager"
     private val KEY_DESKTOP_MODE = "desktop_mode"
 
+    // UI init flag
+    private var isUIInitialized = false
+
+    // Download tracking
+    private val activeDownloads = mutableMapOf<Long, String>() // downloadId -> fileName
+    private var downloadReceiver: BroadcastReceiver? = null
+
     data class WebTab(
         val webView: WebView,
         var title: String = "New Tab",
         var url: String = ""
     )
 
-    private val storagePermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+    // File upload callback — must be declared before onCreate
+    private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val cb = fileUploadCallback ?: return@registerForActivityResult
+        fileUploadCallback = null
+        val results = if (result.resultCode == Activity.RESULT_OK && result.data?.data != null) {
+            arrayOf(result.data!!.data!!)
+        } else {
+            null
+        }
+        cb.onReceiveValue(results)
+    }
+
+    private val storagePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (Environment.isExternalStorageManager()) {
                 initUI()
             } else {
                 Toast.makeText(this, "Storage permission required", Toast.LENGTH_SHORT).show()
+                initUI() // init anyway so app doesn't stay blank
             }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        supportActionBar?.hide()
-        window.requestFeature(Window.FEATURE_NO_TITLE)
+
+        // MUST call before setContentView
+        try {
+            supportActionBar?.hide()
+        } catch (e: Exception) { }
+
         prefs = getSharedPreferences("app_state", MODE_PRIVATE)
         isDesktopMode = prefs.getBoolean(KEY_DESKTOP_MODE, false)
+
         checkPermissionAndInit()
     }
 
@@ -100,49 +136,72 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    intent.data = Uri.parse("package:$packageName")
-                    storagePermission.launch(intent)
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    storagePermissionLauncher.launch(intent)
                 } catch (e: Exception) {
-                    Toast.makeText(this, "Please grant storage permission", Toast.LENGTH_SHORT).show()
                     initUI()
                 }
             } else {
                 initUI()
             }
         } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE), 100)
+            val readPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+            val writePerm = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            if (readPerm != PackageManager.PERMISSION_GRANTED || writePerm != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(
+                        Manifest.permission.READ_EXTERNAL_STORAGE,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    ),
+                    100
+                )
             } else {
                 initUI()
             }
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 100 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            initUI()
-        } else {
-            Toast.makeText(this, "Permission required", Toast.LENGTH_SHORT).show()
-            initUI()
-        }
+        initUI() // init regardless, handle gracefully inside
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun initUI() {
-        originalSystemUiVisibility = window.decorView.systemUiVisibility
+        if (isUIInitialized) return
+        isUIInitialized = true
+
+        // Safe storage directory
+        currentPath = try {
+            Environment.getExternalStorageDirectory().takeIf { it.exists() && it.canRead() }
+                ?: filesDir
+        } catch (e: Exception) {
+            filesDir
+        }
 
         rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
             setBackgroundColor(Color.parseColor("#F5F5F5"))
         }
 
         tabLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#1A1A1A"))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(50)
+            )
         }
 
         val fileTab = createTabButton("📁 Files", true) { switchToFileManager() }
@@ -151,7 +210,10 @@ class MainActivity : AppCompatActivity() {
         tabLayout.addView(browserTab)
 
         contentFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
 
         fileManagerView = createFileManagerView()
@@ -162,81 +224,89 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(tabLayout)
         rootLayout.addView(contentFrame)
+
         setContentView(rootLayout)
 
+        // Restore state AFTER setContentView
         restoreState()
     }
 
     private fun restoreState() {
+        // Restore file path
         try {
             val savedPath = prefs.getString(KEY_CURRENT_PATH, null)
             if (savedPath != null) {
                 val dir = File(savedPath)
-                if (dir.exists() && dir.isDirectory) currentPath = dir
-            }
-            loadFiles(currentPath)
-        } catch (e: Exception) {
-            currentPath = Environment.getExternalStorageDirectory()
-            loadFiles(currentPath)
-        }
-
-        val tabUrls = prefs.getStringSet(KEY_TAB_URLS, null)
-        if (tabUrls != null && tabUrls.isNotEmpty()) {
-            tabUrls.forEach { url ->
-                if (url.isNotEmpty()) {
-                    addNewTab(url, false)
+                if (dir.exists() && dir.isDirectory && dir.canRead()) {
+                    currentPath = dir
                 }
             }
-            if (webTabs.isNotEmpty()) {
-                currentTabIndex = prefs.getInt(KEY_CURRENT_TAB, 0).coerceIn(0, webTabs.size - 1)
-                switchTab(currentTabIndex)
-            } else {
-                addNewTab("https://www.google.com", true)
+        } catch (e: Exception) { }
+        loadFiles(currentPath)
+
+        // Restore browser tabs
+        try {
+            val tabUrls = prefs.getStringSet(KEY_TAB_URLS, null)
+            if (!tabUrls.isNullOrEmpty()) {
+                tabUrls.forEach { url ->
+                    if (url.isNotEmpty()) addNewTab(url, switch = false)
+                }
             }
+        } catch (e: Exception) { }
+
+        if (webTabs.isEmpty()) {
+            addNewTab("https://www.google.com", switch = true)
         } else {
-            addNewTab("https://www.google.com", true)
+            val savedIdx = prefs.getInt(KEY_CURRENT_TAB, 0)
+            currentTabIndex = savedIdx.coerceIn(0, webTabs.size - 1)
+            switchTab(currentTabIndex)
         }
 
-        isFileManagerActive = prefs.getBoolean(KEY_IS_FILE_MANAGER, true)
-        if (isFileManagerActive) {
+        // Restore active view
+        val savedIsFileManager = prefs.getBoolean(KEY_IS_FILE_MANAGER, true)
+        if (savedIsFileManager) {
             switchToFileManager()
-            if (tabLayout.childCount > 0) {
-                (tabLayout.getChildAt(0) as? TextView)?.setBackgroundColor(Color.parseColor("#333333"))
-                (tabLayout.getChildAt(1) as? TextView)?.setBackgroundColor(Color.TRANSPARENT)
-            }
+            highlightTab(0)
         } else {
             switchToBrowser()
-            if (tabLayout.childCount > 1) {
-                (tabLayout.getChildAt(1) as? TextView)?.setBackgroundColor(Color.parseColor("#333333"))
-                (tabLayout.getChildAt(0) as? TextView)?.setBackgroundColor(Color.TRANSPARENT)
-            }
+            highlightTab(1)
+        }
+    }
+
+    private fun highlightTab(activeIndex: Int) {
+        for (i in 0 until tabLayout.childCount) {
+            tabLayout.getChildAt(i)?.setBackgroundColor(
+                if (i == activeIndex) Color.parseColor("#333333") else Color.TRANSPARENT
+            )
         }
     }
 
     override fun onPause() {
         super.onPause()
         saveState()
-        webTabs.forEach { 
-            try {
-                it.webView.onPause()
-            } catch (e: Exception) { }
+        webTabs.forEach {
+            try { it.webView.onPause() } catch (e: Exception) { }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        webTabs.forEach { 
-            try {
-                it.webView.onResume()
-            } catch (e: Exception) { }
+        webTabs.forEach {
+            try { it.webView.onResume() } catch (e: Exception) { }
         }
     }
 
     private fun saveState() {
+        if (!isUIInitialized) return
         try {
+            val urls = webTabs.mapNotNull {
+                try { it.webView.url?.takeIf { u -> u.isNotEmpty() } ?: "about:blank" }
+                catch (e: Exception) { null }
+            }.toSet()
+
             prefs.edit().apply {
                 putString(KEY_CURRENT_PATH, currentPath.absolutePath)
-                putStringSet(KEY_TAB_URLS, webTabs.mapNotNull { it.webView.url?.toString() ?: "about:blank" }.toSet())
+                putStringSet(KEY_TAB_URLS, urls)
                 putInt(KEY_CURRENT_TAB, currentTabIndex)
                 putBoolean(KEY_IS_FILE_MANAGER, isFileManagerActive)
                 putBoolean(KEY_DESKTOP_MODE, isDesktopMode)
@@ -256,7 +326,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(if (selected) Color.parseColor("#333333") else Color.TRANSPARENT)
             setOnClickListener {
                 for (i in 0 until tabLayout.childCount) {
-                    tabLayout.getChildAt(i).setBackgroundColor(Color.TRANSPARENT)
+                    tabLayout.getChildAt(i)?.setBackgroundColor(Color.TRANSPARENT)
                 }
                 setBackgroundColor(Color.parseColor("#333333"))
                 onClick()
@@ -268,7 +338,10 @@ class MainActivity : AppCompatActivity() {
     private fun createFileManagerView(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
 
         val topBar = LinearLayout(this).apply {
@@ -313,7 +386,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         fileListView = ListView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
             divider = null
         }
 
@@ -325,32 +400,64 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadFiles(dir: File) {
         try {
+            if (!dir.exists() || !dir.canRead()) {
+                Toast.makeText(this, "Cannot read directory", Toast.LENGTH_SHORT).show()
+                return
+            }
             currentPath = dir
-            pathText.text = dir.absolutePath.replace(Environment.getExternalStorageDirectory().absolutePath, "/storage/emulated/0")
-            storageInfo.text = "Free: ${getSize(dir.freeSpace)} | Total: ${getSize(dir.totalSpace)}"
+            val storagePath = try {
+                Environment.getExternalStorageDirectory().absolutePath
+            } catch (e: Exception) { "" }
+            pathText.text = dir.absolutePath.replace(storagePath, "/storage/emulated/0")
 
-            val files = dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+            try {
+                storageInfo.text = "Free: ${getSize(dir.freeSpace)} | Total: ${getSize(dir.totalSpace)}"
+            } catch (e: Exception) {
+                storageInfo.text = ""
+            }
 
-            val adapter = object : ArrayAdapter<File>(this, android.R.layout.simple_list_item_2, android.R.id.text1, files) {
+            val files = try {
+                dir.listFiles()
+                    ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+                    ?: emptyList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+
+            val adapter = object : ArrayAdapter<File>(
+                this,
+                android.R.layout.simple_list_item_2,
+                android.R.id.text1,
+                files
+            ) {
                 override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                     val view = super.getView(position, convertView, parent)
-                    val file = getItem(position)!!
+                    val file = getItem(position) ?: return view
                     val text1 = view.findViewById<TextView>(android.R.id.text1)
                     val text2 = view.findViewById<TextView>(android.R.id.text2)
 
                     val icon = when {
                         file.isDirectory -> "📁"
-                        file.name.endsWith(".mp4", true) || file.name.endsWith(".mkv", true) || file.name.endsWith(".avi", true) -> "🎬"
+                        file.name.endsWith(".mp4", true)
+                                || file.name.endsWith(".mkv", true)
+                                || file.name.endsWith(".avi", true) -> "🎬"
                         file.name.endsWith(".pdf", true) -> "📕"
                         file.name.endsWith(".txt", true) -> "📝"
-                        file.name.endsWith(".jpg", true) || file.name.endsWith(".png", true) -> "🖼️"
+                        file.name.endsWith(".jpg", true)
+                                || file.name.endsWith(".jpeg", true)
+                                || file.name.endsWith(".png", true) -> "🖼️"
                         else -> "📄"
                     }
 
                     text1.text = "$icon ${file.name}"
                     text1.setTextColor(Color.BLACK)
                     text1.textSize = 14f
-                    text2.text = "${getSize(file.length())} | ${SimpleDateFormat("dd/MM/yy HH:mm", Locale.getDefault()).format(Date(file.lastModified()))}"
+                    text2.text = try {
+                        "${getSize(file.length())} | ${
+                            SimpleDateFormat("dd/MM/yy HH:mm", Locale.getDefault())
+                                .format(Date(file.lastModified()))
+                        }"
+                    } catch (e: Exception) { "" }
                     text2.textSize = 11f
                     return view
                 }
@@ -358,18 +465,23 @@ class MainActivity : AppCompatActivity() {
 
             fileListView.adapter = adapter
             fileListView.setOnItemClickListener { _, _, position, _ ->
+                if (position >= files.size) return@setOnItemClickListener
                 val file = files[position]
                 when {
                     file.isDirectory -> loadFiles(file)
-                    file.name.endsWith(".mp4", true) || file.name.endsWith(".mkv", true) || file.name.endsWith(".avi", true) -> playVideo(file)
+                    file.name.endsWith(".mp4", true)
+                            || file.name.endsWith(".mkv", true)
+                            || file.name.endsWith(".avi", true) -> playVideo(file)
                     file.name.endsWith(".txt", true) -> openTextFile(file)
                     file.name.endsWith(".pdf", true) -> openPdfFile(file)
-                    else -> Toast.makeText(this@MainActivity, "Unsupported file", Toast.LENGTH_SHORT).show()
+                    else -> Toast.makeText(
+                        this@MainActivity, "Unsupported file", Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
 
             fileListView.setOnItemLongClickListener { _, _, position, _ ->
-                showFileOptions(files[position])
+                if (position < files.size) showFileOptions(files[position])
                 true
             }
         } catch (e: Exception) {
@@ -380,7 +492,7 @@ class MainActivity : AppCompatActivity() {
     private fun goUp() {
         try {
             val parent = currentPath.parentFile
-            if (parent != null && parent.canRead()) {
+            if (parent != null && parent.exists() && parent.canRead()) {
                 loadFiles(parent)
             }
         } catch (e: Exception) { }
@@ -395,10 +507,12 @@ class MainActivity : AppCompatActivity() {
                 val name = input.text.toString().trim()
                 if (name.isNotEmpty()) {
                     val newFolder = File(currentPath, name)
-                    if (newFolder.mkdir()) {
+                    if (newFolder.mkdirs()) {
                         Toast.makeText(this, "Created", Toast.LENGTH_SHORT).show()
                         loadFiles(currentPath)
-                    } else Toast.makeText(this, "Failed", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, "Failed", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -430,7 +544,9 @@ class MainActivity : AppCompatActivity() {
                 if (file.deleteRecursively()) {
                     Toast.makeText(this, "Deleted", Toast.LENGTH_SHORT).show()
                     loadFiles(currentPath)
-                } else Toast.makeText(this, "Delete failed", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Delete failed", Toast.LENGTH_SHORT).show()
+                }
             }
             .setNegativeButton("No", null)
             .show()
@@ -446,7 +562,9 @@ class MainActivity : AppCompatActivity() {
                 if (newName.isNotEmpty() && file.renameTo(File(file.parent, newName))) {
                     Toast.makeText(this, "Renamed", Toast.LENGTH_SHORT).show()
                     loadFiles(currentPath)
-                } else Toast.makeText(this, "Rename failed", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Rename failed", Toast.LENGTH_SHORT).show()
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -461,7 +579,11 @@ class MainActivity : AppCompatActivity() {
             Readable: ${file.canRead()}
             Writable: ${file.canWrite()}
         """.trimIndent()
-        AlertDialog.Builder(this).setTitle("Details").setMessage(msg).setPositiveButton("OK", null).show()
+        AlertDialog.Builder(this)
+            .setTitle("Details")
+            .setMessage(msg)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun playVideo(file: File) {
@@ -471,9 +593,11 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.BLACK)
             }
-            
+
             val videoView = VideoView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                )
                 setVideoPath(file.absolutePath)
                 setOnPreparedListener { mp ->
                     mp.isLooping = false
@@ -484,14 +608,14 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
             }
-            
+
             val controlPanel = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
                 setBackgroundColor(Color.parseColor("#CC000000"))
                 setPadding(dp(8), dp(8), dp(8), dp(8))
             }
-            
+
             val playPauseBtn = Button(this).apply {
                 text = "⏸"
                 textSize = 20f
@@ -507,94 +631,80 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            
+
             val seekBar = SeekBar(this).apply {
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                layoutParams = LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                )
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                        if (fromUser) {
-                            videoView.seekTo(progress)
-                        }
+                    override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                        if (fromUser) videoView.seekTo(progress)
                     }
-                    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) {}
                 })
             }
-            
+
             val timeText = TextView(this).apply {
                 text = "00:00 / 00:00"
                 setTextColor(Color.WHITE)
                 textSize = 12f
                 setPadding(dp(8), 0, dp(8), 0)
             }
-            
-            val fullscreenBtn = Button(this).apply {
-                text = "⛶"
-                textSize = 20f
-                setBackgroundColor(Color.TRANSPARENT)
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    val isFullscreen = dialog.window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0
-                    if (isFullscreen) {
-                        dialog.window?.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
-                    } else {
-                        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
-                    }
-                }
-            }
-            
+
             val closeBtn = Button(this).apply {
                 text = "✕"
                 textSize = 20f
                 setBackgroundColor(Color.TRANSPARENT)
                 setTextColor(Color.WHITE)
-                setOnClickListener { 
-                    videoView.stopPlayback()
-                    dialog.dismiss() 
+                setOnClickListener {
+                    try { videoView.stopPlayback() } catch (e: Exception) { }
+                    dialog.dismiss()
                 }
             }
-            
+
             controlPanel.addView(playPauseBtn)
             controlPanel.addView(seekBar)
             controlPanel.addView(timeText)
-            controlPanel.addView(fullscreenBtn)
             controlPanel.addView(closeBtn)
-            
+
             layout.addView(videoView)
             layout.addView(controlPanel)
-            
+
             val timer = Timer()
             timer.schedule(object : TimerTask() {
                 override fun run() {
                     runOnUiThread {
-                        if (videoView.isPlaying) {
-                            val current = videoView.currentPosition
-                            val duration = videoView.duration
-                            seekBar.max = duration
-                            seekBar.progress = current
-                            timeText.text = "${formatTime(current)} / ${formatTime(duration)}"
-                        }
+                        try {
+                            if (videoView.isPlaying) {
+                                val current = videoView.currentPosition
+                                val duration = videoView.duration
+                                if (duration > 0) {
+                                    seekBar.max = duration
+                                    seekBar.progress = current
+                                    timeText.text = "${formatTime(current)} / ${formatTime(duration)}"
+                                }
+                            }
+                        } catch (e: Exception) { }
                     }
                 }
             }, 0, 1000)
-            
-            dialog.setOnDismissListener { timer.cancel() }
+
+            dialog.setOnDismissListener {
+                timer.cancel()
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
             dialog.setContentView(layout)
             dialog.show()
-            
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            
-            dialog.setOnDismissListener {
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                timer.cancel()
-            }
-            
+
         } catch (e: Exception) {
             Toast.makeText(this, "Error playing video: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
-    
+
     private fun formatTime(millis: Int): String {
+        if (millis < 0) return "00:00"
         val seconds = millis / 1000
         val minutes = seconds / 60
         val hours = minutes / 60
@@ -632,8 +742,15 @@ class MainActivity : AppCompatActivity() {
             return
         }
         try {
-            val renderer = PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY))
+            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(pfd)
             val pageCount = renderer.pageCount
+            if (pageCount == 0) {
+                renderer.close()
+                Toast.makeText(this, "Empty PDF", Toast.LENGTH_SHORT).show()
+                return
+            }
+
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
             val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
@@ -650,16 +767,18 @@ class MainActivity : AppCompatActivity() {
             val closeBtn = Button(this).apply {
                 text = "✕"
                 textSize = 20f
-                setOnClickListener { 
+                setOnClickListener {
                     try { renderer.close() } catch (e: Exception) { }
-                    dialog.dismiss() 
+                    dialog.dismiss()
                 }
             }
             topBar.addView(titleText)
             topBar.addView(closeBtn)
 
             val imageView = ImageView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                )
                 scaleType = ImageView.ScaleType.FIT_CENTER
             }
 
@@ -672,7 +791,9 @@ class MainActivity : AppCompatActivity() {
                     imageView.setImageBitmap(bitmap)
                     titleText.text = "${file.name} - ${pageNum + 1}/$pageCount"
                     page.close()
-                } catch (e: Exception) { }
+                } catch (e: Exception) {
+                    Toast.makeText(this, "PDF render error", Toast.LENGTH_SHORT).show()
+                }
             }
             renderPage(0)
 
@@ -697,7 +818,8 @@ class MainActivity : AppCompatActivity() {
         }
         Thread {
             try {
-                val renderer = PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY))
+                val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                val renderer = PdfRenderer(pfd)
                 val outputDir = File(currentPath, "${file.nameWithoutExtension}_jpg")
                 outputDir.mkdirs()
 
@@ -715,7 +837,9 @@ class MainActivity : AppCompatActivity() {
                     loadFiles(currentPath)
                 }
             } catch (e: Exception) {
-                runOnUiThread { Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }.start()
     }
@@ -724,7 +848,10 @@ class MainActivity : AppCompatActivity() {
     private fun createBrowserView(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
 
         val tabBar = LinearLayout(this).apply {
@@ -737,9 +864,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             isHorizontalScrollBarEnabled = false
         }
-        tabContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
+        tabContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         tabScroll.addView(tabContainer)
 
         val newTabBtn = Button(this).apply {
@@ -747,7 +872,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 18f
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#444444"))
-            setOnClickListener { addNewTab("https://www.google.com", true) }
+            setOnClickListener { addNewTab("https://www.google.com", switch = true) }
         }
 
         tabBar.addView(tabScroll)
@@ -777,17 +902,23 @@ class MainActivity : AppCompatActivity() {
             text = "Go"
             setOnClickListener { loadUrlInCurrentTab() }
         }
-        
+
         val desktopBtn = Button(this).apply {
             text = if (isDesktopMode) "📱" else "💻"
             textSize = 16f
             setOnClickListener {
                 isDesktopMode = !isDesktopMode
                 text = if (isDesktopMode) "📱" else "💻"
-                Toast.makeText(this@MainActivity, if (isDesktopMode) "Desktop Mode ON" else "Desktop Mode OFF", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (isDesktopMode) "Desktop Mode ON" else "Desktop Mode OFF",
+                    Toast.LENGTH_SHORT
+                ).show()
                 webTabs.forEach { tab ->
-                    updateDesktopMode(tab.webView)
-                    tab.webView.reload()
+                    try {
+                        updateDesktopMode(tab.webView)
+                        tab.webView.reload()
+                    } catch (e: Exception) { }
                 }
             }
         }
@@ -806,7 +937,9 @@ class MainActivity : AppCompatActivity() {
         urlLayout.addView(progressBar)
 
         webContainer = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
         }
 
         layout.addView(tabBar)
@@ -814,22 +947,28 @@ class MainActivity : AppCompatActivity() {
         layout.addView(webContainer)
         return layout
     }
-    
+
     private fun updateDesktopMode(webView: WebView) {
         val userAgent = if (isDesktopMode) {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         } else {
-            "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            WebSettings.getDefaultUserAgent(this)
         }
-        webView.settings.userAgentString = userAgent
+        try {
+            webView.settings.userAgentString = userAgent
+        } catch (e: Exception) { }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun addNewTab(url: String, switch: Boolean = true) {
         try {
-            val webView = WebView(this)
-            webView.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            
+            val webView = WebView(applicationContext).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+
             webView.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -844,15 +983,18 @@ class MainActivity : AppCompatActivity() {
                 mediaPlaybackRequiresUserGesture = false
                 allowFileAccess = true
                 allowContentAccess = true
-                setSupportZoom(true)
-                builtInZoomControls = true
-                displayZoomControls = false
             }
-            
+
             updateDesktopMode(webView)
-            
+
+            val tab = WebTab(webView, title = "Loading…", url = url)
+            webTabs.add(tab)
+
             webView.webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView,
+                    request: WebResourceRequest
+                ): Boolean {
                     view.loadUrl(request.url.toString())
                     return true
                 }
@@ -874,6 +1016,14 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (idx != -1) webTabs[idx].url = url ?: ""
                 }
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                    // silently handle errors
+                }
             }
 
             webView.webChromeClient = object : WebChromeClient() {
@@ -886,7 +1036,7 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onReceivedTitle(view: WebView?, title: String?) {
                     val index = webTabs.indexOfFirst { it.webView == view }
-                    if (index != -1 && title != null) {
+                    if (index != -1 && !title.isNullOrEmpty()) {
                         webTabs[index].title = title
                         updateTabTitles()
                     }
@@ -902,12 +1052,20 @@ class MainActivity : AppCompatActivity() {
                     originalOrientation = requestedOrientation
 
                     val decorView = window.decorView as FrameLayout
-                    decorView.addView(customView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-
+                    decorView.addView(
+                        customView,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                    window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = (
+                        View.SYSTEM_UI_FLAG_FULLSCREEN
                             or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    )
                     tabLayout.visibility = View.GONE
                 }
 
@@ -916,101 +1074,61 @@ class MainActivity : AppCompatActivity() {
                     val decorView = window.decorView as FrameLayout
                     decorView.removeView(customView)
                     customView = null
-
                     requestedOrientation = originalOrientation
-                    window.decorView.systemUiVisibility = originalSystemUiVisibility
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
                     tabLayout.visibility = View.VISIBLE
                     customViewCallback?.onCustomViewHidden()
+                    customViewCallback = null
                 }
 
-                override fun onShowFileChooser(webView: WebView?, filePathCallback: ValueCallback<Array<Uri>>?, fileChooserParams: FileChooserParams?): Boolean {
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    fileUploadCallback?.onReceiveValue(null) // cancel any pending
                     fileUploadCallback = filePathCallback
-                    val intent = Intent(Intent.ACTION_GET_CONTENT)
-                    intent.addCategory(Intent.CATEGORY_OPENABLE)
-                    intent.type = "*/*"
+                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                    }
                     fileChooserLauncher.launch(intent)
                     return true
                 }
             }
 
-            webView.setDownloadListener { downloadUrl, _, contentDisposition, mimetype, _ ->
-                try {
-                    val fileName = URLUtil.guessFileName(downloadUrl, contentDisposition, mimetype)
-                    
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        val contentValues = ContentValues().apply {
-                            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                            put(MediaStore.MediaColumns.MIME_TYPE, mimetype)
-                            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                        }
-                        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                        if (uri != null) {
-                            val request = DownloadManager.Request(Uri.parse(downloadUrl))
-                            request.setDestinationUri(uri)
-                            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                            request.setMimeType(mimetype)
-                            request.setTitle(fileName)
-                            request.setDescription("Downloading $fileName")
-                            
-                            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                            dm.enqueue(request)
-                            Toast.makeText(this@MainActivity, "Download started: $fileName", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        val request = DownloadManager.Request(Uri.parse(downloadUrl))
-                            .setTitle(fileName)
-                            .setDescription("Downloading $fileName")
-                            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                        
-                        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                        dm.enqueue(request)
-                        Toast.makeText(this@MainActivity, "Download started: $fileName", Toast.LENGTH_SHORT).show()
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(this@MainActivity, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
+            webView.setDownloadListener { downloadUrl, userAgent, contentDisposition, mimetype, contentLength ->
+                handleDownload(downloadUrl, userAgent, contentDisposition, mimetype, contentLength, webView)
             }
 
-            webView.loadUrl(url)
-
-            val tab = WebTab(webView, title = "New Tab", url = url)
-            webTabs.add(tab)
-
+            // Add tab button
+            val tabIndex = webTabs.size - 1
             val tabButton = Button(this).apply {
-                text = "Tab ${webTabs.size}"
+                text = "Tab ${tabIndex + 1}"
                 textSize = 11f
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#444444"))
-                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.MATCH_PARENT).apply { 
-                    setMargins(dp(2), dp(2), dp(2), dp(2))
-                }
+                layoutParams = LinearLayout.LayoutParams(
+                    dp(70), ViewGroup.LayoutParams.MATCH_PARENT
+                ).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
                 setPadding(dp(4), 0, dp(4), 0)
                 setSingleLine(true)
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 setOnClickListener { switchTab(webTabs.indexOf(tab)) }
-                setOnLongClickListener { 
+                setOnLongClickListener {
                     closeTab(webTabs.indexOf(tab))
-                    true 
+                    true
                 }
             }
             tabContainer.addView(tabButton)
-            if (switch) switchTab(webTabs.size - 1)
+
+            webView.loadUrl(url)
+
+            if (switch) switchTab(tabIndex)
+
         } catch (e: Exception) {
             Toast.makeText(this, "Error creating tab: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
-    private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (fileUploadCallback != null) {
-            val results = if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                arrayOf(result.data?.data!!)
-            } else {
-                null
-            }
-            fileUploadCallback?.onReceiveValue(results)
-            fileUploadCallback = null
         }
     }
 
@@ -1018,13 +1136,18 @@ class MainActivity : AppCompatActivity() {
         if (index < 0 || index >= webTabs.size) return
         currentTabIndex = index
         webContainer.removeAllViews()
-        webContainer.addView(webTabs[index].webView)
-        urlBar.setText(webTabs[index].webView.url)
+        try {
+            webContainer.addView(webTabs[index].webView)
+            urlBar.setText(
+                try { webTabs[index].webView.url ?: "" } catch (e: Exception) { "" }
+            )
+        } catch (e: Exception) { }
         progressBar.visibility = View.GONE
         updateTabTitles()
     }
 
     private fun closeTab(index: Int): Boolean {
+        if (index < 0 || index >= webTabs.size) return false
         if (webTabs.size <= 1) {
             Toast.makeText(this, "Cannot close last tab", Toast.LENGTH_SHORT).show()
             return false
@@ -1034,8 +1157,8 @@ class MainActivity : AppCompatActivity() {
             webTabs[index].webView.destroy()
         } catch (e: Exception) { }
         webTabs.removeAt(index)
-        tabContainer.removeViewAt(index)
-        if (currentTabIndex >= webTabs.size) currentTabIndex = webTabs.size - 1
+        if (index < tabContainer.childCount) tabContainer.removeViewAt(index)
+        currentTabIndex = currentTabIndex.coerceIn(0, webTabs.size - 1)
         switchTab(currentTabIndex)
         return true
     }
@@ -1043,19 +1166,25 @@ class MainActivity : AppCompatActivity() {
     private fun updateTabTitles() {
         for (i in 0 until tabContainer.childCount) {
             val btn = tabContainer.getChildAt(i) as? Button ?: continue
-            val title = if (i < webTabs.size) webTabs[i].title else "Tab"
+            val title = if (i < webTabs.size) webTabs[i].title else "Tab ${i + 1}"
             btn.text = if (title.length > 7) title.substring(0, 6) + "…" else title
-            btn.setBackgroundColor(if (i == currentTabIndex) Color.parseColor("#6200EE") else Color.parseColor("#444444"))
+            btn.setBackgroundColor(
+                if (i == currentTabIndex) Color.parseColor("#6200EE")
+                else Color.parseColor("#444444")
+            )
         }
     }
 
     private fun loadUrlInCurrentTab() {
+        if (webTabs.isEmpty()) return
         var url = urlBar.text.toString().trim()
-        if (url.isEmpty()) {
-            url = "https://www.google.com"
-        }
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "https://$url"
+        if (url.isEmpty()) url = "https://www.google.com"
+        if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("about:")) {
+            url = if (url.contains(".") && !url.contains(" ")) {
+                "https://$url"
+            } else {
+                "https://www.google.com/search?q=${Uri.encode(url)}"
+            }
         }
         try {
             webTabs[currentTabIndex].webView.loadUrl(url)
@@ -1076,10 +1205,8 @@ class MainActivity : AppCompatActivity() {
         isFileManagerActive = false
         fileManagerView.visibility = View.GONE
         browserView.visibility = View.VISIBLE
-        if (currentTabIndex < webTabs.size) {
-            try {
-                webTabs[currentTabIndex].webView.onResume()
-            } catch (e: Exception) { }
+        if (currentTabIndex in webTabs.indices) {
+            try { webTabs[currentTabIndex].webView.onResume() } catch (e: Exception) { }
         }
     }
 
@@ -1087,32 +1214,390 @@ class MainActivity : AppCompatActivity() {
         if (size <= 0) return "0 B"
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
         val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
-        return DecimalFormat("#,##0.#").format(size / Math.pow(1024.0, digitGroups.toDouble())) + " " + units[digitGroups]
+            .coerceIn(0, units.size - 1)
+        return DecimalFormat("#,##0.#").format(
+            size / Math.pow(1024.0, digitGroups.toDouble())
+        ) + " " + units[digitGroups]
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    override fun onBackPressed() {
-        if (customView != null) {
-            webTabs[currentTabIndex].webView.webChromeClient?.onHideCustomView()
-            return
-        }
+    // ==================== DOWNLOAD SYSTEM ====================
 
-        if (!isFileManagerActive) {
-            if (webTabs.isNotEmpty() && webTabs[currentTabIndex].webView.canGoBack()) {
-                webTabs[currentTabIndex].webView.goBack()
-            } else {
-                super.onBackPressed()
+    private fun handleDownload(
+        url: String,
+        userAgent: String,
+        contentDisposition: String,
+        mimetype: String,
+        contentLength: Long,
+        webView: WebView
+    ) {
+        when {
+            url.startsWith("blob:") -> downloadBlobUrl(url, webView)
+            url.startsWith("data:") -> downloadDataUrl(url)
+            else -> downloadWithManager(url, userAgent, contentDisposition, mimetype, contentLength, webView)
+        }
+    }
+
+    private fun downloadWithManager(
+        url: String,
+        userAgentStr: String,
+        contentDisposition: String,
+        mimetype: String,
+        contentLength: Long,
+        webView: WebView
+    ) {
+        try {
+            val rawName = URLUtil.guessFileName(url, contentDisposition, mimetype)
+            val fileName = sanitizeFileName(rawName)
+
+            // Cookie — অনেক site এর জন্য অপরিহার্য
+            val cookies = CookieManager.getInstance().getCookie(url) ?: ""
+
+            // Actual UA from webview
+            val ua = if (userAgentStr.isBlank()) {
+                try { webView.settings.userAgentString } catch (e: Exception) { userAgentStr }
+            } else userAgentStr
+
+            AlertDialog.Builder(this)
+                .setTitle("Download")
+                .setMessage("ফাইল ডাউনলোড করবেন?\n\n📄 $fileName\n📦 ${if (contentLength > 0) getSize(contentLength) else "Unknown size"}")
+                .setPositiveButton("Download") { _, _ ->
+                    try {
+                        val parsedUri = Uri.parse(url)
+
+                        val request = DownloadManager.Request(parsedUri).apply {
+                            setTitle(fileName)
+                            setDescription("Downloading...")
+                            setMimeType(mimetype.ifBlank { "application/octet-stream" })
+                            setNotificationVisibility(
+                                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                            )
+                            // Cookie পাঠানো
+                            if (cookies.isNotEmpty()) addRequestHeader("Cookie", cookies)
+                            // User-Agent পাঠানো
+                            if (ua.isNotEmpty()) addRequestHeader("User-Agent", ua)
+                            // Referer
+                            try {
+                                val referer = "${parsedUri.scheme}://${parsedUri.host}"
+                                addRequestHeader("Referer", referer)
+                            } catch (e: Exception) { }
+
+                            // Android 10+ MediaStore, নিচে legacy
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                            } else {
+                                val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                                destDir.mkdirs()
+                                setDestinationUri(Uri.fromFile(File(destDir, fileName)))
+                            }
+                            setAllowedOverMetered(true)
+                            setAllowedOverRoaming(true)
+                        }
+
+                        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                        val downloadId = dm.enqueue(request)
+                        activeDownloads[downloadId] = fileName
+                        registerDownloadReceiver()
+
+                        Toast.makeText(this, "⬇️ শুরু হয়েছে: $fileName", Toast.LENGTH_SHORT).show()
+
+                    } catch (e: Exception) {
+                        // DownloadManager ব্যর্থ হলে manual download try করো
+                        Toast.makeText(this, "DownloadManager ব্যর্থ, retry করছে...", Toast.LENGTH_SHORT).show()
+                        downloadManually(url, cookies, ua, contentDisposition, mimetype)
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+
+        } catch (e: Exception) {
+            Toast.makeText(this, "Download error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Blob URL — JS দিয়ে base64 বানিয়ে ধরতে হয় */
+    private fun downloadBlobUrl(blobUrl: String, webView: WebView) {
+        val js = """
+            javascript:(function() {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '$blobUrl', true);
+                xhr.responseType = 'blob';
+                xhr.onload = function(e) {
+                    if (this.status == 200) {
+                        var blob = this.response;
+                        var reader = new FileReader();
+                        reader.readAsDataURL(blob);
+                        reader.onloadend = function() {
+                            var base64data = reader.result;
+                            AndroidInterface.downloadBase64(base64data, blob.type);
+                        }
+                    }
+                };
+                xhr.send();
+            })()
+        """.trimIndent()
+
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun downloadBase64(dataUrl: String, mimeType: String) {
+                runOnUiThread {
+                    downloadDataUrl(dataUrl, mimeType)
+                }
             }
-        } else {
+        }, "AndroidInterface")
+
+        webView.evaluateJavascript(js, null)
+        Toast.makeText(this, "Blob ফাইল প্রস্তুত করছে...", Toast.LENGTH_SHORT).show()
+    }
+
+    /** data:... URL (base64 encoded content) সরাসরি ফাইলে লেখা */
+    private fun downloadDataUrl(dataUrl: String, overrideMime: String = "") {
+        Thread {
             try {
-                if (currentPath.absolutePath != Environment.getExternalStorageDirectory().absolutePath) {
-                    goUp()
+                val commaIdx = dataUrl.indexOf(',')
+                if (commaIdx == -1) {
+                    runOnUiThread { Toast.makeText(this, "Invalid data URL", Toast.LENGTH_SHORT).show() }
+                    return@Thread
+                }
+
+                val header = dataUrl.substring(0, commaIdx) // e.g. "data:application/pdf;base64"
+                val base64Data = dataUrl.substring(commaIdx + 1)
+                val mimeType = if (overrideMime.isNotEmpty()) overrideMime
+                               else header.substringAfter("data:").substringBefore(";").ifBlank { "application/octet-stream" }
+
+                val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "bin"
+                val fileName = "download_${System.currentTimeMillis()}.$ext"
+
+                val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val cv = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                        put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                    if (uri != null) {
+                        contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                        runOnUiThread {
+                            Toast.makeText(this, "✅ সংরক্ষিত: $fileName", Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        runOnUiThread { Toast.makeText(this, "Save failed", Toast.LENGTH_SHORT).show() }
+                    }
                 } else {
-                    super.onBackPressed()
+                    val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    destDir.mkdirs()
+                    val file = File(destDir, fileName)
+                    FileOutputStream(file).use { it.write(bytes) }
+                    runOnUiThread {
+                        Toast.makeText(this, "✅ সংরক্ষিত: $fileName", Toast.LENGTH_LONG).show()
+                    }
                 }
             } catch (e: Exception) {
-                super.onBackPressed()
+                runOnUiThread {
+                    Toast.makeText(this, "Data URL save failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
+
+    /** DownloadManager কাজ না করলে manual HttpURLConnection দিয়ে download */
+    private fun downloadManually(
+        url: String,
+        cookies: String,
+        userAgent: String,
+        contentDisposition: String,
+        mimetype: String
+    ) {
+        val fileName = sanitizeFileName(URLUtil.guessFileName(url, contentDisposition, mimetype))
+        Toast.makeText(this, "⬇️ Manual download: $fileName", Toast.LENGTH_SHORT).show()
+
+        Thread {
+            var connection: HttpURLConnection? = null
+            var inputStream: InputStream? = null
+            try {
+                connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 30_000
+                connection.readTimeout = 60_000
+                connection.setRequestProperty("User-Agent", userAgent)
+                if (cookies.isNotEmpty()) connection.setRequestProperty("Cookie", cookies)
+                connection.setRequestProperty("Accept", "*/*")
+                connection.instanceFollowRedirects = true
+                connection.connect()
+
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    runOnUiThread {
+                        Toast.makeText(
+                            this, "Server error: HTTP $responseCode", Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@Thread
+                }
+
+                inputStream = connection.inputStream
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val cv = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                        put(MediaStore.Downloads.MIME_TYPE, mimetype.ifBlank { "application/octet-stream" })
+                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                    if (uri != null) {
+                        contentResolver.openOutputStream(uri)?.use { out ->
+                            inputStream.copyTo(out, bufferSize = 8192)
+                        }
+                        cv.clear()
+                        cv.put(MediaStore.Downloads.IS_PENDING, 0)
+                        contentResolver.update(uri, cv, null, null)
+                        runOnUiThread {
+                            Toast.makeText(this, "✅ ডাউনলোড সম্পন্ন: $fileName", Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        runOnUiThread { Toast.makeText(this, "Storage write failed", Toast.LENGTH_SHORT).show() }
+                    }
+                } else {
+                    val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    destDir.mkdirs()
+                    val outFile = File(destDir, fileName)
+                    FileOutputStream(outFile).use { out ->
+                        inputStream.copyTo(out, bufferSize = 8192)
+                    }
+                    runOnUiThread {
+                        Toast.makeText(this, "✅ ডাউনলোড সম্পন্ন: $fileName", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                try { inputStream?.close() } catch (e: Exception) { }
+                try { connection?.disconnect() } catch (e: Exception) { }
+            }
+        }.start()
+    }
+
+    private fun registerDownloadReceiver() {
+        if (downloadReceiver != null) return
+        downloadReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: return
+                val fileName = activeDownloads.remove(id) ?: return
+
+                val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                val query = DownloadManager.Query().setFilterById(id)
+                val cursor = dm.query(query)
+
+                if (cursor.moveToFirst()) {
+                    val statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                    val status = if (statusCol >= 0) cursor.getInt(statusCol) else -1
+
+                    when (status) {
+                        DownloadManager.STATUS_SUCCESSFUL -> {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "✅ ডাউনলোড সম্পন্ন: $fileName",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        DownloadManager.STATUS_FAILED -> {
+                            val reasonCol = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
+                            val reason = if (reasonCol >= 0) cursor.getInt(reasonCol) else 0
+                            val reasonStr = downloadFailReason(reason)
+                            // DownloadManager failed — manual fallback চেষ্টা
+                            Toast.makeText(
+                                this@MainActivity,
+                                "⚠️ DownloadManager ব্যর্থ ($reasonStr), retry করছে...",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+                cursor.close()
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                downloadReceiver,
+                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+                RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(
+                downloadReceiver,
+                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            )
+        }
+    }
+
+    private fun downloadFailReason(reason: Int): String = when (reason) {
+        DownloadManager.ERROR_CANNOT_RESUME -> "Resume করা যাচ্ছে না"
+        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "Storage পাওয়া যাচ্ছে না"
+        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "ফাইল আগে থেকে আছে"
+        DownloadManager.ERROR_FILE_ERROR -> "ফাইল error"
+        DownloadManager.ERROR_HTTP_DATA_ERROR -> "HTTP data error"
+        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "স্টোরেজ কম"
+        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "অনেক redirect"
+        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "Unsupported HTTP code"
+        DownloadManager.ERROR_UNKNOWN -> "অজানা error"
+        else -> "Error code: $reason"
+    }
+
+    private fun sanitizeFileName(name: String): String {
+        val cleaned = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+        return if (cleaned.length > 200) cleaned.substring(0, 200) else cleaned.ifBlank { "download_${System.currentTimeMillis()}" }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            customView != null -> {
+                // Hide fullscreen video
+                val chromeClient = try {
+                    webTabs[currentTabIndex].webView.webChromeClient
+                } catch (e: Exception) { null }
+                if (chromeClient != null) {
+                    chromeClient.onHideCustomView()
+                } else {
+                    customViewCallback?.onCustomViewHidden()
+                    customViewCallback = null
+                    val decorView = window.decorView as FrameLayout
+                    customView?.let { decorView.removeView(it) }
+                    customView = null
+                    tabLayout.visibility = View.VISIBLE
+                    requestedOrientation = originalOrientation
+                }
+            }
+            !isFileManagerActive -> {
+                val canGoBack = try {
+                    webTabs.isNotEmpty() && webTabs[currentTabIndex].webView.canGoBack()
+                } catch (e: Exception) { false }
+                if (canGoBack) {
+                    webTabs[currentTabIndex].webView.goBack()
+                } else {
+                    @Suppress("DEPRECATION")
+                    super.onBackPressed()
+                }
+            }
+            else -> {
+                try {
+                    val storagePath = Environment.getExternalStorageDirectory().absolutePath
+                    if (currentPath.absolutePath != storagePath) {
+                        goUp()
+                    } else {
+                        @Suppress("DEPRECATION")
+                        super.onBackPressed()
+                    }
+                } catch (e: Exception) {
+                    @Suppress("DEPRECATION")
+                    super.onBackPressed()
+                }
             }
         }
     }
@@ -1120,12 +1605,17 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         try {
             saveState()
-            webTabs.forEach { 
+            webTabs.forEach {
                 try {
                     it.webView.stopLoading()
                     it.webView.destroy()
                 } catch (e: Exception) { }
             }
+            webTabs.clear()
+        } catch (e: Exception) { }
+        try {
+            downloadReceiver?.let { unregisterReceiver(it) }
+            downloadReceiver = null
         } catch (e: Exception) { }
         super.onDestroy()
     }
