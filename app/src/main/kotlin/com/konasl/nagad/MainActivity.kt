@@ -15,7 +15,9 @@ import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
@@ -392,6 +394,13 @@ class MainActivity : AppCompatActivity() {
         return layout
     }
 
+    private fun isImageFile(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+               lower.endsWith(".png") || lower.endsWith(".gif") ||
+               lower.endsWith(".bmp") || lower.endsWith(".webp")
+    }
+
     private fun loadFiles(dir: File) {
         try {
             if (!dir.exists() || !dir.canRead()) {
@@ -437,9 +446,7 @@ class MainActivity : AppCompatActivity() {
                                 || file.name.endsWith(".avi", true) -> "🎬"
                         file.name.endsWith(".pdf", true) -> "📕"
                         file.name.endsWith(".txt", true) -> "📝"
-                        file.name.endsWith(".jpg", true)
-                                || file.name.endsWith(".jpeg", true)
-                                || file.name.endsWith(".png", true) -> "🖼️"
+                        isImageFile(file.name) -> "🖼️"
                         else -> "📄"
                     }
 
@@ -468,6 +475,7 @@ class MainActivity : AppCompatActivity() {
                             || file.name.endsWith(".avi", true) -> playVideo(file)
                     file.name.endsWith(".txt", true) -> openTextFile(file)
                     file.name.endsWith(".pdf", true) -> openPdfFile(file)
+                    isImageFile(file.name) -> openImageFile(file)
                     else -> Toast.makeText(
                         this@MainActivity, "Unsupported file", Toast.LENGTH_SHORT
                     ).show()
@@ -580,29 +588,50 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ==================== VIDEO PLAYER (camera cutout safe) ====================
     private fun playVideo(file: File) {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
-            val layout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.BLACK)
-                gravity = Gravity.CENTER
-            }
 
-            val videoContainer = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            // Enable display cutout mode so video fills the full screen properly
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                dialog.window?.attributes?.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+            dialog.window?.setFlags(
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN
+            )
+            // Hide system bars so content fills edge-to-edge
+            dialog.window?.decorView?.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            )
+
+            val rootFrame = FrameLayout(this).apply {
+                setBackgroundColor(Color.BLACK)
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
                 )
             }
 
+            // Video container — fills parent, centered
             val videoView = VideoView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
                 )
                 setVideoPath(file.absolutePath)
                 setOnPreparedListener { mp ->
                     mp.isLooping = false
+                    // Keep aspect ratio centered, not stretched
+                    mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
                     start()
                 }
                 setOnErrorListener { _, _, _ ->
@@ -610,17 +639,23 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
             }
-            videoContainer.addView(videoView)
+            rootFrame.addView(videoView)
 
-            val controlPanel = LinearLayout(this).apply {
+            // Control overlay at the bottom
+            val controlOverlay = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#CC000000"))
-                setPadding(dp(8), dp(8), dp(8), dp(8))
+                setPadding(dp(8), dp(8), dp(8), dp(16))
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM
+                )
             }
 
             val topControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
+                gravity = Gravity.CENTER_VERTICAL
             }
 
             val playPauseBtn = Button(this).apply {
@@ -666,28 +701,32 @@ class MainActivity : AppCompatActivity() {
             val orientationControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
-                setPadding(0, dp(8), 0, dp(8))
+                setPadding(0, dp(4), 0, dp(4))
             }
 
             val portraitBtn = Button(this).apply {
-                text = "📱 Portrait"
+                text = "📱"
                 textSize = 12f
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
                 setOnClickListener {
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    Toast.makeText(this@MainActivity, "Portrait Mode", Toast.LENGTH_SHORT).show()
                 }
             }
 
             val landscapeBtn = Button(this).apply {
-                text = "🌍 Landscape"
+                text = "🌍"
                 textSize = 12f
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
                 setOnClickListener {
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                    Toast.makeText(this@MainActivity, "Landscape Mode", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -696,9 +735,11 @@ class MainActivity : AppCompatActivity() {
                 textSize = 12f
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
                 setOnClickListener {
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
-                    Toast.makeText(this@MainActivity, "Auto Rotation", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -707,6 +748,9 @@ class MainActivity : AppCompatActivity() {
                 textSize = 14f
                 setBackgroundColor(Color.parseColor("#D32F2F"))
                 setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
                 setOnClickListener {
                     try { videoView.stopPlayback() } catch (e: Exception) { }
                     dialog.dismiss()
@@ -719,12 +763,12 @@ class MainActivity : AppCompatActivity() {
             orientationControls.addView(sensorBtn)
             orientationControls.addView(closeBtn)
 
-            controlPanel.addView(topControls)
-            controlPanel.addView(orientationControls)
+            controlOverlay.addView(topControls)
+            controlOverlay.addView(orientationControls)
 
-            layout.addView(videoContainer)
-            layout.addView(controlPanel)
+            rootFrame.addView(controlOverlay)
 
+            // Timer to update seekbar
             val timer = Timer()
             timer.schedule(object : TimerTask() {
                 override fun run() {
@@ -748,7 +792,7 @@ class MainActivity : AppCompatActivity() {
                 timer.cancel()
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
-            dialog.setContentView(layout)
+            dialog.setContentView(rootFrame)
             dialog.show()
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 
@@ -769,25 +813,268 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ==================== TEXT VIEWER ====================
     private fun openTextFile(file: File) {
         try {
             val text = file.readText()
-            val scrollView = ScrollView(this)
+
+            val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar_Fullscreen)
+
+            val layout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#FAFAFA"))
+            }
+
+            // Top bar
+            val topBar = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setBackgroundColor(Color.parseColor("#2C2C2C"))
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            val titleView = TextView(this).apply {
+                this.text = file.name
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setSingleLine(true)
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            }
+
+            val closeBtn = Button(this).apply {
+                text = "✕"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#D32F2F"))
+                layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+                setPadding(0, 0, 0, 0)
+                setOnClickListener { dialog.dismiss() }
+            }
+
+            // Search bar
+            val searchBar = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setBackgroundColor(Color.parseColor("#E8E8E8"))
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            val searchInput = EditText(this).apply {
+                hint = "🔍 Search in file..."
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setSingleLine(true)
+                textSize = 13f
+            }
+
+            val resultCount = TextView(this).apply {
+                text = ""
+                setTextColor(Color.parseColor("#666666"))
+                textSize = 12f
+                setPadding(dp(8), 0, dp(8), 0)
+            }
+
+            topBar.addView(titleView)
+            topBar.addView(closeBtn)
+            searchBar.addView(searchInput)
+            searchBar.addView(resultCount)
+
+            // Info bar
+            val infoBar = TextView(this).apply {
+                val lines = text.lines().size
+                val words = text.trim().split(Regex("\\s+")).size
+                this.text = "  📄 ${getSize(file.length())}  |  $lines lines  |  $words words"
+                setTextColor(Color.parseColor("#666666"))
+                textSize = 11f
+                setBackgroundColor(Color.parseColor("#E0E0E0"))
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+            }
+
+            val scrollView = ScrollView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                )
+            }
+
             val textView = TextView(this).apply {
                 this.text = text
                 setPadding(dp(16), dp(16), dp(16), dp(16))
                 setTextIsSelectable(true)
                 textSize = 14f
+                setTextColor(Color.parseColor("#212121"))
+                typeface = Typeface.MONOSPACE
             }
             scrollView.addView(textView)
-            AlertDialog.Builder(this)
-                .setTitle(file.name)
-                .setView(scrollView)
-                .setPositiveButton("Close", null)
-                .show()
+
+            // Live search highlight
+            searchInput.addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    val query = s.toString().trim()
+                    if (query.isEmpty()) {
+                        textView.text = text
+                        resultCount.text = ""
+                        return
+                    }
+                    val spannable = android.text.SpannableString(text)
+                    var count = 0
+                    var idx = text.indexOf(query, ignoreCase = true)
+                    while (idx != -1) {
+                        spannable.setSpan(
+                            android.text.style.BackgroundColorSpan(Color.parseColor("#FFEB3B")),
+                            idx, idx + query.length,
+                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                        count++
+                        idx = text.indexOf(query, idx + 1, ignoreCase = true)
+                    }
+                    textView.text = spannable
+                    resultCount.text = if (count > 0) "$count found" else "Not found"
+                }
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            })
+
+            layout.addView(topBar)
+            layout.addView(searchBar)
+            layout.addView(infoBar)
+            layout.addView(scrollView)
+
+            dialog.setContentView(layout)
+            dialog.show()
         } catch (e: Exception) {
             Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // ==================== IMAGE VIEWER ====================
+    private fun openImageFile(file: File) {
+        try {
+            val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                dialog.window?.attributes?.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+
+            val rootFrame = FrameLayout(this).apply {
+                setBackgroundColor(Color.BLACK)
+            }
+
+            // Load bitmap with sample size to avoid OOM
+            val bitmap = loadBitmapSafe(file)
+            if (bitmap == null) {
+                Toast.makeText(this, "Cannot open image", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            // Zoomable ImageView via matrix
+            val imageView = object : androidx.appcompat.widget.AppCompatImageView(this) {
+                private val matrix = Matrix()
+                private var scaleFactor = 1f
+                private val scaleDetector = ScaleGestureDetector(context,
+                    object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        override fun onScale(detector: ScaleGestureDetector): Boolean {
+                            scaleFactor *= detector.scaleFactor
+                            scaleFactor = scaleFactor.coerceIn(0.5f, 8f)
+                            matrix.setScale(scaleFactor, scaleFactor,
+                                detector.focusX, detector.focusY)
+                            imageMatrix = matrix
+                            return true
+                        }
+                    })
+
+                init {
+                    scaleType = ScaleType.FIT_CENTER
+                    setImageBitmap(bitmap)
+                }
+
+                override fun onTouchEvent(event: MotionEvent): Boolean {
+                    scaleDetector.onTouchEvent(event)
+                    if (event.pointerCount == 1 && !scaleDetector.isInProgress) {
+                        performClick()
+                    }
+                    return true
+                }
+            }
+            imageView.layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER
+            )
+            rootFrame.addView(imageView)
+
+            // Top info overlay
+            val topOverlay = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setBackgroundColor(Color.parseColor("#CC000000"))
+                setPadding(dp(12), dp(8), dp(8), dp(8))
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP
+                )
+            }
+
+            val infoText = TextView(this).apply {
+                text = "${file.name}  |  ${bitmap.width}×${bitmap.height}  |  ${getSize(file.length())}"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setSingleLine(true)
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            }
+
+            val closeBtn = Button(this).apply {
+                text = "✕"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#D32F2F"))
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+                setPadding(0, 0, 0, 0)
+                setOnClickListener { dialog.dismiss() }
+            }
+
+            topOverlay.addView(infoText)
+            topOverlay.addView(closeBtn)
+            rootFrame.addView(topOverlay)
+
+            // Bottom hint
+            val hintText = TextView(this).apply {
+                text = "Pinch to zoom"
+                setTextColor(Color.parseColor("#AAFFFFFF"))
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.parseColor("#88000000"))
+                setPadding(dp(16), dp(6), dp(16), dp(6))
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                ).apply { setMargins(0, 0, 0, dp(24)) }
+            }
+            rootFrame.addView(hintText)
+
+            dialog.setContentView(rootFrame)
+            dialog.show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Image error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun loadBitmapSafe(file: File): Bitmap? {
+        return try {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, options)
+            val maxDim = 2048
+            var sampleSize = 1
+            while ((options.outWidth / sampleSize) > maxDim || (options.outHeight / sampleSize) > maxDim) {
+                sampleSize *= 2
+            }
+            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            BitmapFactory.decodeFile(file.absolutePath, decodeOptions)
+        } catch (e: Exception) { null }
     }
 
     private fun openPdfFile(file: File) {
@@ -1037,11 +1324,12 @@ class MainActivity : AppCompatActivity() {
                 mediaPlaybackRequiresUserGesture = false
                 allowFileAccess = true
                 allowContentAccess = true
+                @Suppress("DEPRECATION")
                 setSavePassword(true)
+                @Suppress("DEPRECATION")
                 setSaveFormData(true)
             }
-            
-            // Fix: Enable third party cookies properly
+
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
             CookieManager.getInstance().setAcceptCookie(true)
 
@@ -1298,6 +1586,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ==================== DOWNLOAD WITH RENAME ====================
     private fun downloadWithManager(
         url: String,
         userAgentStr: String,
@@ -1308,7 +1597,7 @@ class MainActivity : AppCompatActivity() {
     ) {
         try {
             val rawName = URLUtil.guessFileName(url, contentDisposition, mimetype)
-            val fileName = sanitizeFileName(rawName)
+            val defaultFileName = sanitizeFileName(rawName)
 
             val cookies = CookieManager.getInstance().getCookie(url) ?: ""
 
@@ -1316,10 +1605,48 @@ class MainActivity : AppCompatActivity() {
                 try { webView.settings.userAgentString } catch (e: Exception) { userAgentStr }
             } else userAgentStr
 
+            // Build dialog with rename input
+            val dialogView = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(16), dp(20), dp(8))
+            }
+
+            val sizeText = if (contentLength > 0) getSize(contentLength) else "Unknown size"
+
+            val infoLabel = TextView(this).apply {
+                text = "📦 Size: $sizeText"
+                textSize = 13f
+                setTextColor(Color.parseColor("#555555"))
+                setPadding(0, 0, 0, dp(12))
+            }
+
+            val fileNameLabel = TextView(this).apply {
+                text = "File name (editable):"
+                textSize = 13f
+                setTextColor(Color.parseColor("#333333"))
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, dp(4))
+            }
+
+            val fileNameInput = EditText(this).apply {
+                setText(defaultFileName)
+                textSize = 14f
+                setSingleLine(true)
+                // Select all text so user can easily replace
+                post { selectAll() }
+            }
+
+            dialogView.addView(infoLabel)
+            dialogView.addView(fileNameLabel)
+            dialogView.addView(fileNameInput)
+
             AlertDialog.Builder(this)
-                .setTitle("Download")
-                .setMessage("ফাইল ডাউনলোড করবেন?\n\n📄 $fileName\n📦 ${if (contentLength > 0) getSize(contentLength) else "Unknown size"}")
+                .setTitle("⬇️ Download File")
+                .setView(dialogView)
                 .setPositiveButton("Download") { _, _ ->
+                    val inputName = fileNameInput.text.toString().trim()
+                    val fileName = sanitizeFileName(inputName.ifBlank { defaultFileName })
+
                     try {
                         val parsedUri = Uri.parse(url)
 
@@ -1357,7 +1684,7 @@ class MainActivity : AppCompatActivity() {
 
                     } catch (e: Exception) {
                         Toast.makeText(this, "DownloadManager ব্যর্থ, retry করছে...", Toast.LENGTH_SHORT).show()
-                        downloadManually(url, cookies, ua, contentDisposition, mimetype)
+                        downloadManually(url, cookies, ua, contentDisposition, mimetype, fileName)
                     }
                 }
                 .setNegativeButton("Cancel", null)
@@ -1453,14 +1780,17 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    // Updated: accepts custom fileName parameter
     private fun downloadManually(
         url: String,
         cookies: String,
         userAgent: String,
         contentDisposition: String,
-        mimetype: String
+        mimetype: String,
+        customFileName: String? = null
     ) {
-        val fileName = sanitizeFileName(URLUtil.guessFileName(url, contentDisposition, mimetype))
+        val fileName = customFileName
+            ?: sanitizeFileName(URLUtil.guessFileName(url, contentDisposition, mimetype))
         Toast.makeText(this, "⬇️ Manual download: $fileName", Toast.LENGTH_SHORT).show()
 
         Thread {
