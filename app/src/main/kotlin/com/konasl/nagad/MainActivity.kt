@@ -595,7 +595,6 @@ class MainActivity : AppCompatActivity() {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
 
-            // Enable display cutout mode so video fills the full screen properly
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 dialog.window?.attributes?.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -604,7 +603,6 @@ class MainActivity : AppCompatActivity() {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN
             )
-            // Hide system bars so content fills edge-to-edge
             dialog.window?.decorView?.systemUiVisibility = (
                 View.SYSTEM_UI_FLAG_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -622,7 +620,6 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // Video container — fills parent, centered
             val videoView = VideoView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -632,7 +629,6 @@ class MainActivity : AppCompatActivity() {
                 setVideoPath(file.absolutePath)
                 setOnPreparedListener { mp ->
                     mp.isLooping = false
-                    // Keep aspect ratio centered, not stretched
                     mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
                     start()
                 }
@@ -643,7 +639,6 @@ class MainActivity : AppCompatActivity() {
             }
             rootFrame.addView(videoView)
 
-            // Control overlay at the bottom
             val controlOverlay = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#CC000000"))
@@ -745,7 +740,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val closeBtn = Button(this).apply {
+            // FIXED: Changed variable name from 'closeBtn' to 'closeVideoButton' to avoid conflict
+            val closeVideoButton = Button(this).apply {
                 text = "✕ Close"
                 textSize = 14f
                 setBackgroundColor(Color.parseColor("#D32F2F"))
@@ -763,14 +759,13 @@ class MainActivity : AppCompatActivity() {
             orientationControls.addView(portraitBtn)
             orientationControls.addView(landscapeBtn)
             orientationControls.addView(sensorBtn)
-            orientationControls.addView(closeBtn)
+            orientationControls.addView(closeVideoButton)
 
             controlOverlay.addView(topControls)
             controlOverlay.addView(orientationControls)
 
             rootFrame.addView(controlOverlay)
 
-            // Timer to update seekbar
             val timer = Timer()
             timer.schedule(object : TimerTask() {
                 override fun run() {
@@ -827,7 +822,6 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.parseColor("#FAFAFA"))
             }
 
-            // Top bar
             val topBar = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setBackgroundColor(Color.parseColor("#2C2C2C"))
@@ -845,7 +839,8 @@ class MainActivity : AppCompatActivity() {
                 ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             }
 
-            val closeBtn = Button(this).apply {
+            // FIXED: Changed variable name from 'closeBtn' to 'closeTextButton' to avoid conflict
+            val closeTextButton = Button(this).apply {
                 text = "✕"
                 textSize = 16f
                 setTextColor(Color.WHITE)
@@ -855,7 +850,6 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { dialog.dismiss() }
             }
 
-            // Search bar
             val searchBar = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setBackgroundColor(Color.parseColor("#E8E8E8"))
@@ -878,11 +872,10 @@ class MainActivity : AppCompatActivity() {
             }
 
             topBar.addView(titleView)
-            topBar.addView(closeBtn)
+            topBar.addView(closeTextButton)
             searchBar.addView(searchInput)
             searchBar.addView(resultCount)
 
-            // Info bar
             val infoBar = TextView(this).apply {
                 val lines = text.lines().size
                 val words = text.trim().split(Regex("\\s+")).size
@@ -909,7 +902,6 @@ class MainActivity : AppCompatActivity() {
             }
             scrollView.addView(textView)
 
-            // Live search highlight
             searchInput.addTextChangedListener(object : android.text.TextWatcher {
                 override fun afterTextChanged(s: android.text.Editable?) {
                     val query = s.toString().trim()
@@ -963,14 +955,12 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.BLACK)
             }
 
-            // Load bitmap with sample size to avoid OOM
             val bitmap = loadBitmapSafe(file)
             if (bitmap == null) {
                 Toast.makeText(this, "Cannot open image", Toast.LENGTH_SHORT).show()
                 return
             }
 
-            // Zoomable ImageView — state outside the anonymous object so lambda capture works
             val zoomMatrix = Matrix()
             var zoomScale = 1f
 
@@ -1006,7 +996,6 @@ class MainActivity : AppCompatActivity() {
 
             rootFrame.addView(imageView)
 
-            // Top info overlay
             val topOverlay = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setBackgroundColor(Color.parseColor("#CC000000"))
@@ -1028,7 +1017,8 @@ class MainActivity : AppCompatActivity() {
                 ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             }
 
-            val closeBtn = Button(this).apply {
+            // FIXED: Changed variable name from 'closeBtn' to 'closeImageButton' to avoid conflict
+            val closeImageButton = Button(this).apply {
                 text = "✕"
                 textSize = 16f
                 setTextColor(Color.WHITE)
@@ -1039,10 +1029,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             topOverlay.addView(infoText)
-            topOverlay.addView(closeBtn)
+            topOverlay.addView(closeImageButton)
             rootFrame.addView(topOverlay)
 
-            // Bottom hint
             val hintText = TextView(this).apply {
                 text = "Pinch to zoom"
                 setTextColor(Color.parseColor("#AAFFFFFF"))
@@ -1107,7 +1096,8 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
-            val closeBtn = Button(this).apply {
+            // FIXED: Changed variable name from 'closeBtn' to 'closePdfButton' to avoid conflict
+            val closePdfButton = Button(this).apply {
                 text = "✕"
                 textSize = 20f
                 setOnClickListener {
@@ -1116,7 +1106,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             topBar.addView(titleText)
-            topBar.addView(closeBtn)
+            topBar.addView(closePdfButton)
 
             val imageView = ImageView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(
@@ -1588,7 +1578,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== DOWNLOAD WITH RENAME ====================
     private fun downloadWithManager(
         url: String,
         userAgentStr: String,
@@ -1607,7 +1596,6 @@ class MainActivity : AppCompatActivity() {
                 try { webView.settings.userAgentString } catch (e: Exception) { userAgentStr }
             } else userAgentStr
 
-            // Build dialog with rename input
             val dialogView = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(20), dp(16), dp(20), dp(8))
@@ -1634,7 +1622,6 @@ class MainActivity : AppCompatActivity() {
                 setText(defaultFileName)
                 textSize = 14f
                 setSingleLine(true)
-                // Select all text so user can easily replace
                 post { selectAll() }
             }
 
@@ -1782,7 +1769,6 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // Updated: accepts custom fileName parameter
     private fun downloadManually(
         url: String,
         cookies: String,
