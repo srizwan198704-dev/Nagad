@@ -2,9 +2,7 @@ package com.konasl.nagad
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
-import android.content.Context
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -22,275 +20,243 @@ import java.io.File
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var rootLayout: FrameLayout
+    private lateinit var container: FrameLayout
     private lateinit var bottomNav: BottomNavigationView
-    private lateinit var fileSection: LinearLayout
-    private lateinit var browserSection: LinearLayout
-    private lateinit var playerSection: FrameLayout
+    private lateinit var fileLayout: LinearLayout
+    private lateinit var browserLayout: LinearLayout
+    private lateinit var playerLayout: FrameLayout
     
     private lateinit var tabLayout: TabLayout
-    private lateinit var webContainer: FrameLayout
-    private val webViews = mutableListOf<WebView>()
+    private lateinit var webFrame: FrameLayout
+    private val webList = mutableListOf<WebView>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // থিম এরর ফিক্স করার জন্য এটি সবার আগে থাকতে হবে
+        // রানটাইমে থিম এরর প্রতিরোধের জন্য
         setTheme(androidx.appcompat.R.style.Theme_AppCompat_DayNight_NoActionBar)
         super.onCreate(savedInstanceState)
+
+        initUI()
+        handleBackPress()
+        checkStoragePermission()
         
-        try {
-            setupUI()
-            checkPermissions()
-            showSection("files")
-            
-            onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-                override fun handleOnBackPressed() {
-                    if (playerSection.visibility == View.VISIBLE) {
-                        closePlayer()
-                    } else if (browserSection.visibility == View.VISIBLE) {
-                        val currentWeb = webViews.getOrNull(tabLayout.selectedTabPosition)
-                        if (currentWeb?.canGoBack() == true) {
-                            currentWeb.goBack()
-                        } else {
-                            showSection("files")
-                        }
-                    } else {
-                        finish()
-                    }
-                }
-            })
-        } catch (e: Exception) {
-            Toast.makeText(this, "Setup Error: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        // শুরুতে ফাইল ম্যানেজার দেখাবে
+        switchView("files")
     }
 
-    private fun setupUI() {
-        rootLayout = FrameLayout(this).apply { 
+    private fun initUI() {
+        container = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
-            layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
         }
 
-        // ফাইল ও ব্রাউজার সেকশন তৈরি
-        fileSection = createFileSection()
-        browserSection = createBrowserSection()
-        playerSection = FrameLayout(this).apply {
+        // ফাইল সেকশন
+        fileLayout = createFilesUI()
+        // ব্রাউজার সেকশন
+        browserLayout = createBrowserUI()
+        // ভিডিও প্লেয়ার সেকশন
+        playerLayout = FrameLayout(this).apply {
             visibility = View.GONE
             setBackgroundColor(Color.BLACK)
         }
 
-        // বটম নেভিগেশন ফিক্স
+        // বটম নেভিগেশন
         bottomNav = BottomNavigationView(this).apply {
-            setBackgroundColor(Color.parseColor("#121212"))
-            // আইকন হিসেবে অ্যান্ড্রয়েড সিস্টেম ড্রয়েবল ব্যবহার
-            menu.add(Menu.NONE, 1, 0, "Files").setIcon(android.R.drawable.ic_menu_save)
-            menu.add(Menu.NONE, 2, 1, "Browser").setIcon(android.R.drawable.ic_menu_search)
+            setBackgroundColor(Color.parseColor("#1A1A1A"))
+            val m = menu
+            m.add(0, 101, 0, "ফাইলস").setIcon(android.R.drawable.ic_menu_save)
+            m.add(0, 102, 1, "ব্রাউজার").setIcon(android.R.drawable.ic_menu_search)
             
-            itemIconTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
-            itemTextColor = android.content.res.ColorStateList.valueOf(Color.WHITE)
-
             setOnItemSelectedListener { item ->
                 when (item.itemId) {
-                    1 -> showSection("files")
-                    2 -> showSection("browser")
+                    101 -> switchView("files")
+                    102 -> switchView("browser")
                 }
                 true
             }
         }
 
-        val navParams = FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { 
-            gravity = Gravity.BOTTOM 
-        }
+        val navParams = FrameLayout.LayoutParams(MATCH, WRAP).apply { gravity = Gravity.BOTTOM }
 
-        rootLayout.addView(fileSection)
-        rootLayout.addView(browserSection)
-        rootLayout.addView(playerSection)
-        rootLayout.addView(bottomNav, navParams)
+        container.addView(fileLayout)
+        container.addView(browserLayout)
+        container.addView(playerLayout)
+        container.addView(bottomNav, navParams)
 
-        setContentView(rootLayout)
+        setContentView(container)
     }
 
-    private fun showSection(type: String) {
-        fileSection.visibility = if (type == "files") View.VISIBLE else View.GONE
-        browserSection.visibility = if (type == "browser") View.VISIBLE else View.GONE
+    private fun switchView(tag: String) {
+        fileLayout.visibility = if (tag == "files") View.VISIBLE else View.GONE
+        browserLayout.visibility = if (tag == "browser") View.VISIBLE else View.GONE
         bottomNav.visibility = View.VISIBLE
-        if (type == "files") refreshFileList(Environment.getExternalStorageDirectory())
+        if (tag == "files") loadFiles(Environment.getExternalStorageDirectory())
     }
 
-    private fun createFileSection(): LinearLayout {
+    private fun createFilesUI(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { 
-                setMargins(0, 0, 0, 160) // বটম বারের জন্য জায়গা রাখা
-            }
-            val title = TextView(this@MainActivity).apply {
-                text = "My Files"
+            setPadding(0, 0, 0, 160)
+            val header = TextView(this@MainActivity).apply {
+                text = "ফাইল ম্যানেজার"
                 textSize = 22f
                 setTextColor(Color.WHITE)
-                setPadding(40, 50, 40, 30)
+                setPadding(50, 50, 50, 30)
                 typeface = Typeface.DEFAULT_BOLD
             }
-            addView(title)
-            val listView = ListView(this@MainActivity).apply { 
-                tag = "file_list"
-                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            }
-            addView(listView)
+            val list = ListView(this@MainActivity).apply { tag = "list_view" }
+            addView(header)
+            addView(list)
         }
     }
 
-    private fun refreshFileList(dir: File) {
-        val listView = fileSection.findViewWithTag<ListView>("file_list") ?: return
-        val files = dir.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList()
+    private fun loadFiles(dir: File) {
+        val list = fileLayout.findViewWithTag<ListView>("list_view") ?: return
+        val items = dir.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList()
         
-        val adapter = object : ArrayAdapter<File>(this, android.R.layout.simple_list_item_1, files) {
-            override fun getView(position: Int, v: View?, p: ViewGroup): View {
-                val tv = super.getView(position, v, p) as TextView
-                val f = getItem(position)
+        list.adapter = object : ArrayAdapter<File>(this, android.R.layout.simple_list_item_1, items) {
+            override fun getView(pos: Int, conv: View?, parent: ViewGroup): View {
+                val tv = super.getView(pos, conv, parent) as TextView
+                val f = getItem(pos)
                 tv.text = f?.name
                 tv.setTextColor(if (f?.isDirectory == true) Color.CYAN else Color.WHITE)
-                tv.setPadding(40, 30, 40, 30)
                 return tv
             }
         }
-        listView.adapter = adapter
-        listView.setOnItemClickListener { _, _, i, _ ->
-            val f = files[i]
-            if (f.isDirectory) refreshFileList(f) else openFile(f)
+
+        list.setOnItemClickListener { _, _, i, _ ->
+            val f = items[i]
+            if (f.isDirectory) loadFiles(f) else handleFile(f)
         }
     }
 
-    private fun createBrowserSection(): LinearLayout {
+    private fun createBrowserUI(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { 
-                setMargins(0, 0, 0, 160) 
-            }
+            setPadding(0, 0, 0, 160)
 
             tabLayout = TabLayout(this@MainActivity).apply {
-                setBackgroundColor(Color.parseColor("#1F1F1F"))
-                setTabTextColors(Color.GRAY, Color.WHITE)
+                setBackgroundColor(Color.parseColor("#222222"))
+                setTabTextColors(Color.LTGRAY, Color.WHITE)
                 setSelectedTabIndicatorColor(Color.RED)
                 tabMode = TabLayout.MODE_SCROLLABLE
             }
-            
-            val controls = LinearLayout(this@MainActivity).apply {
+
+            val bar = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding(10, 10, 10, 10)
-                val urlInput = EditText(this@MainActivity).apply {
-                    hint = "https://"; setTextColor(Color.WHITE)
-                    setHintTextColor(Color.GRAY)
-                    layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+                val input = EditText(this@MainActivity).apply {
+                    hint = "URL লিখুন"; setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
                 }
-                val btnAdd = Button(this@MainActivity).apply { text = "+" }
-                btnAdd.setOnClickListener { addNewTab("https://www.google.com") }
-                val btnGo = Button(this@MainActivity).apply { text = "Go" }
-                btnGo.setOnClickListener {
-                    val url = urlInput.text.toString()
+                val go = Button(this@MainActivity).apply { text = "Go" }
+                val add = Button(this@MainActivity).apply { text = "+" }
+                
+                add.setOnClickListener { openNewTab("https://www.google.com") }
+                go.setOnClickListener {
+                    val url = input.text.toString()
                     val finalUrl = if (url.startsWith("http")) url else "https://$url"
-                    webViews.getOrNull(tabLayout.selectedTabPosition)?.loadUrl(finalUrl)
+                    webList.getOrNull(tabLayout.selectedTabPosition)?.loadUrl(finalUrl)
                 }
-                addView(urlInput); addView(btnGo); addView(btnAdd)
+                addView(input); addView(go); addView(add)
             }
 
-            webContainer = FrameLayout(this@MainActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+            webFrame = FrameLayout(this@MainActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
             }
 
-            addView(tabLayout); addView(controls); addView(webContainer)
+            addView(tabLayout); addView(bar); addView(webFrame)
             tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-                override fun onTabSelected(t: TabLayout.Tab) { updateWebVisibility(t.position) }
+                override fun onTabSelected(t: TabLayout.Tab) {
+                    webList.forEachIndexed { i, wv -> wv.visibility = if (i == t.position) View.VISIBLE else View.GONE }
+                }
                 override fun onTabUnselected(t: TabLayout.Tab) {}
                 override fun onTabReselected(t: TabLayout.Tab) {}
             })
-            addNewTab("https://www.google.com")
+            openNewTab("https://www.google.com")
         }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun addNewTab(url: String) {
-        val webView = WebView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+    private fun openNewTab(url: String) {
+        val wv = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                databaseEnabled = true
-                // Desktop User Agent
                 userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    val index = webViews.indexOf(view)
-                    if (index != -1) tabLayout.getTabAt(index)?.text = view?.title ?: "Tab"
+                override fun onPageFinished(v: WebView?, u: String?) {
+                    val i = webList.indexOf(v)
+                    if (i != -1) tabLayout.getTabAt(i)?.text = v?.title ?: "ট্যাব"
                 }
             }
             loadUrl(url)
             visibility = View.GONE
         }
-        webViews.add(webView)
-        webContainer.addView(webView)
-        val tab = tabLayout.newTab().setText("Tab ${webViews.size}")
+        webList.add(wv)
+        webFrame.addView(wv)
+        val tab = tabLayout.newTab().setText("নতুন ট্যাব")
         tabLayout.addTab(tab)
         tab.select()
     }
 
-    private fun updateWebVisibility(index: Int) {
-        webViews.forEachIndexed { i, wv -> wv.visibility = if (i == index) View.VISIBLE else View.GONE }
-    }
-
-    private fun openFile(file: File) {
-        val ext = file.extension.lowercase()
-        if (ext in listOf("mp4", "mkv", "3gp", "webm")) {
+    private fun handleFile(f: File) {
+        if (f.extension.lowercase() in listOf("mp4", "mkv", "webm")) {
             bottomNav.visibility = View.GONE
-            fileSection.visibility = View.GONE
-            playerSection.visibility = View.VISIBLE
-            playerSection.removeAllViews()
+            fileLayout.visibility = View.GONE
+            playerLayout.visibility = View.VISIBLE
+            playerLayout.removeAllViews()
 
-            val videoView = VideoView(this).apply {
-                setVideoPath(file.absolutePath)
+            val vv = VideoView(this).apply {
+                setVideoPath(f.absolutePath)
                 val mc = MediaController(this@MainActivity)
-                mc.setAnchorView(this)
                 setMediaController(mc)
-                // Landscape Frame Fix
-                layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.CENTER)
+                layoutParams = FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER)
             }
-            playerSection.addView(videoView)
-            videoView.start()
-        } else if (ext == "apk") {
-            installApk(file)
-        }
-    }
-
-    private fun closePlayer() {
-        playerSection.removeAllViews()
-        playerSection.visibility = View.GONE
-        showSection("files")
-    }
-
-    private fun installApk(file: File) {
-        try {
-            val uri = FileProvider.getUriForFile(this, "$packageName.provider", file)
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Cannot install APK", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun checkPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                intent.data = Uri.parse("package:$packageName")
+            playerLayout.addView(vv)
+            vv.start()
+        } else if (f.extension.lowercase() == "apk") {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW)
+                val uri = FileProvider.getUriForFile(this, "$packageName.provider", f)
+                intent.setDataAndType(uri, "application/vnd.android.package-archive")
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
+            } catch (e: Exception) {
+                Toast.makeText(this, "ইনস্টল করা যাচ্ছে না", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    private fun handleBackPress() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (playerLayout.visibility == View.VISIBLE) {
+                    playerLayout.removeAllViews()
+                    playerLayout.visibility = View.GONE
+                    switchView("files")
+                } else if (browserLayout.visibility == View.VISIBLE) {
+                    val current = webList.getOrNull(tabLayout.selectedTabPosition)
+                    if (current?.canGoBack() == true) current.goBack() else switchView("files")
+                } else {
+                    finish()
+                }
+            }
+        })
+    }
+
+    private fun checkStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                data = Uri.parse("package:$packageName")
+            })
         }
     }
 
     companion object {
-        const val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
-        const val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
+        const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     }
 }
