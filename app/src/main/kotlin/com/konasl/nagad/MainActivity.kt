@@ -1,6 +1,7 @@
 package com.konasl.nagad
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
@@ -66,23 +67,18 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
         }
 
-        // 1. File Section
         fileSection = createFileSection()
-        
-        // 2. Browser Section
         browserSection = createBrowserSection()
-        
-        // 3. Player Section (Full Screen)
         playerSection = FrameLayout(this).apply {
             visibility = View.GONE
             setBackgroundColor(Color.BLACK)
         }
 
-        // 4. Bottom Navigation
         bottomNav = BottomNavigationView(this).apply {
             setBackgroundColor(Color.parseColor("#121212"))
-            val menuFiles = menu.add(0, 1, 0, "Files")
-            val menuBrowser = menu.add(0, 2, 1, "Browser")
+            // মেনু আইটেম তৈরি
+            menu.add(Menu.NONE, 1, 0, "Files").setIcon(android.R.drawable.ic_menu_save)
+            menu.add(Menu.NONE, 2, 1, "Browser").setIcon(android.R.drawable.ic_menu_search)
             
             setOnItemSelectedListener { item ->
                 when (item.itemId) {
@@ -95,7 +91,7 @@ class MainActivity : ComponentActivity() {
 
         val navParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
+            150 // নির্দিষ্ট উচ্চতা
         ).apply { gravity = Gravity.BOTTOM }
 
         rootLayout.addView(fileSection)
@@ -110,11 +106,9 @@ class MainActivity : ComponentActivity() {
         fileSection.visibility = if (type == "files") View.VISIBLE else View.GONE
         browserSection.visibility = if (type == "browser") View.VISIBLE else View.GONE
         bottomNav.visibility = View.VISIBLE
-        
         if (type == "files") refreshFileList(Environment.getExternalStorageDirectory())
     }
 
-    // --- File Manager Logic ---
     private fun createFileSection(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -128,7 +122,6 @@ class MainActivity : ComponentActivity() {
             addView(title)
             
             val listView = ListView(this@MainActivity).apply {
-                id = View.generateViewId()
                 tag = "file_list"
             }
             addView(listView)
@@ -158,7 +151,7 @@ class MainActivity : ComponentActivity() {
         
         listView.setOnItemLongClickListener { _, _, position, _ ->
             val file = files[position]
-            android.app.AlertDialog.Builder(this)
+            AlertDialog.Builder(this)
                 .setTitle("Delete")
                 .setMessage("Delete ${file.name}?")
                 .setPositiveButton("Yes") { _, _ -> 
@@ -171,13 +164,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // --- Browser Logic (Multi-Tab) ---
     private fun createBrowserSection(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
 
-            // Tab Bar
             tabLayout = TabLayout(this@MainActivity).apply {
                 setBackgroundColor(Color.parseColor("#1F1F1F"))
                 setTabTextColors(Color.GRAY, Color.WHITE)
@@ -193,22 +184,18 @@ class MainActivity : ComponentActivity() {
                     hint = "Enter URL"
                     setHintTextColor(Color.GRAY)
                     setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(0, 120, 1f)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                     tag = "url_input"
                 }
                 
-                val btnAdd = Button(this@MainActivity).apply {
-                    text = "+"
-                    setOnClickListener { addNewTab("https://moviebox.ph") }
-                }
+                val btnAdd = Button(this@MainActivity).apply { text = "+" }
+                btnAdd.setOnClickListener { addNewTab("https://www.google.com") }
 
-                val btnGo = Button(this@MainActivity).apply {
-                    text = "Go"
-                    setOnClickListener {
-                        val url = urlInput.text.toString()
-                        val finalUrl = if (url.contains("://")) url else "https://$url"
-                        webViews[tabLayout.selectedTabPosition].loadUrl(finalUrl)
-                    }
+                val btnGo = Button(this@MainActivity).apply { text = "Go" }
+                btnGo.setOnClickListener {
+                    val url = urlInput.text.toString()
+                    val finalUrl = if (url.contains("://")) url else "https://$url"
+                    webViews.getOrNull(tabLayout.selectedTabPosition)?.loadUrl(finalUrl)
                 }
                 
                 addView(urlInput)
@@ -216,21 +203,21 @@ class MainActivity : ComponentActivity() {
                 addView(btnAdd)
             }
 
-            webContainer = FrameLayout(this@MainActivity)
+            webContainer = FrameLayout(this@MainActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+            }
 
             addView(tabLayout)
             addView(controls)
             addView(webContainer)
 
             tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-                override fun onTabSelected(tab: TabLayout.Tab?) {
-                    updateWebVisibility(tab?.position ?: 0)
-                }
-                override fun onTabUnselected(tab: TabLayout.Tab?) {}
-                override fun onTabReselected(tab: TabLayout.Tab?) {}
+                override fun onTabSelected(tab: TabLayout.Tab) { updateWebVisibility(tab.position) }
+                override fun onTabUnselected(tab: TabLayout.Tab) {}
+                override fun onTabReselected(tab: TabLayout.Tab) {}
             })
 
-            addNewTab("https://moviebox.ph")
+            addNewTab("https://www.google.com")
         }
     }
 
@@ -241,10 +228,7 @@ class MainActivity : ComponentActivity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                databaseEnabled = true
                 userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                loadWithOverviewMode = true
-                useWideViewPort = true
             }
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -258,7 +242,6 @@ class MainActivity : ComponentActivity() {
 
         webViews.add(webView)
         webContainer.addView(webView)
-        
         val newTab = tabLayout.newTab().setText("New Tab")
         tabLayout.addTab(newTab)
         newTab.select()
@@ -270,7 +253,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // --- Player Logic (Full Screen Fix) ---
     private fun openFile(file: File) {
         val ext = file.extension.lowercase()
         if (ext == "mp4" || ext == "mkv") {
@@ -284,15 +266,8 @@ class MainActivity : ComponentActivity() {
                 val mc = MediaController(this@MainActivity)
                 mc.setAnchorView(this)
                 setMediaController(mc)
-                
-                // Full Frame Center Fix
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    Gravity.CENTER
-                )
+                layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.CENTER)
             }
-            
             playerSection.addView(videoView)
             videoView.start()
         } else if (ext == "apk") {
@@ -301,7 +276,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closePlayer() {
-        playerSection.removeAllViews()
         playerSection.visibility = View.GONE
         showSection("files")
     }
