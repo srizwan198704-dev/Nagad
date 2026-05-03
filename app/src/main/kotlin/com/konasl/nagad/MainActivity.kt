@@ -590,7 +590,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    // ==================== VIDEO PLAYER (camera cutout safe) ====================
+    // ==================== VIDEO PLAYER ====================
     private fun playVideo(file: File) {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
@@ -740,7 +740,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // FIXED: Changed variable name from 'closeBtn' to 'closeVideoButton' to avoid conflict
             val closeVideoButton = Button(this).apply {
                 text = "✕ Close"
                 textSize = 14f
@@ -839,7 +838,6 @@ class MainActivity : AppCompatActivity() {
                 ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             }
 
-            // FIXED: Changed variable name from 'closeBtn' to 'closeTextButton' to avoid conflict
             val closeTextButton = Button(this).apply {
                 text = "✕"
                 textSize = 16f
@@ -1017,7 +1015,6 @@ class MainActivity : AppCompatActivity() {
                 ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             }
 
-            // FIXED: Changed variable name from 'closeBtn' to 'closeImageButton' to avoid conflict
             val closeImageButton = Button(this).apply {
                 text = "✕"
                 textSize = 16f
@@ -1096,7 +1093,6 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
-            // FIXED: Changed variable name from 'closeBtn' to 'closePdfButton' to avoid conflict
             val closePdfButton = Button(this).apply {
                 text = "✕"
                 textSize = 20f
@@ -1119,9 +1115,9 @@ class MainActivity : AppCompatActivity() {
             fun renderPage(pageNum: Int) {
                 try {
                     val page = renderer.openPage(pageNum)
-                    val bitmap = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    imageView.setImageBitmap(bitmap)
+                    val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    imageView.setImageBitmap(bmp)
                     titleText.text = "${file.name} - ${pageNum + 1}/$pageCount"
                     page.close()
                 } catch (e: Exception) {
@@ -1158,10 +1154,10 @@ class MainActivity : AppCompatActivity() {
 
                 for (i in 0 until renderer.pageCount) {
                     val page = renderer.openPage(i)
-                    val bitmap = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     val outFile = File(outputDir, "page_${i + 1}.jpg")
-                    FileOutputStream(outFile).use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+                    FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
                     page.close()
                 }
                 renderer.close()
@@ -1634,6 +1630,7 @@ class MainActivity : AppCompatActivity() {
                 .setView(dialogView)
                 .setPositiveButton("Download") { _, _ ->
                     val inputName = fileNameInput.text.toString().trim()
+                    // FIX: use a single val computed once, no reassignment
                     val fileName = sanitizeFileName(inputName.ifBlank { defaultFileName })
 
                     try {
@@ -1755,8 +1752,8 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                     destDir.mkdirs()
-                    val file = File(destDir, fileName)
-                    FileOutputStream(file).use { it.write(bytes) }
+                    val outFile = File(destDir, fileName)
+                    FileOutputStream(outFile).use { it.write(bytes) }
                     runOnUiThread {
                         Toast.makeText(this, "✅ সংরক্ষিত: $fileName", Toast.LENGTH_LONG).show()
                     }
