@@ -812,7 +812,7 @@ class MainActivity : AppCompatActivity() {
     // ==================== TEXT VIEWER ====================
     private fun openTextFile(file: File) {
         try {
-            val text = file.readText()
+            val fileContent = file.readText()
 
             val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar_Fullscreen)
 
@@ -839,7 +839,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val closeTextButton = Button(this).apply {
-                text = "✕"
+                text = "X"
                 textSize = 16f
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#D32F2F"))
@@ -875,8 +875,8 @@ class MainActivity : AppCompatActivity() {
             searchBar.addView(resultCount)
 
             val infoBar = TextView(this).apply {
-                val lines = text.lines().size
-                val words = text.trim().split(Regex("\\s+")).size
+                val lines = fileContent.lines().size
+                val words = fileContent.trim().split(Regex("\\s+")).size
                 this.text = "  📄 ${getSize(file.length())}  |  $lines lines  |  $words words"
                 setTextColor(Color.parseColor("#666666"))
                 textSize = 11f
@@ -891,7 +891,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val textView = TextView(this).apply {
-                this.text = text
+                this.text = fileContent
                 setPadding(dp(16), dp(16), dp(16), dp(16))
                 setTextIsSelectable(true)
                 textSize = 14f
@@ -904,13 +904,13 @@ class MainActivity : AppCompatActivity() {
                 override fun afterTextChanged(s: android.text.Editable?) {
                     val query = s.toString().trim()
                     if (query.isEmpty()) {
-                        textView.text = text
+                        textView.text = fileContent
                         resultCount.text = ""
                         return
                     }
-                    val spannable = android.text.SpannableString(text)
+                    val spannable = android.text.SpannableString(fileContent)
                     var count = 0
-                    var idx = text.indexOf(query, ignoreCase = true)
+                    var idx = fileContent.indexOf(query, ignoreCase = true)
                     while (idx != -1) {
                         spannable.setSpan(
                             android.text.style.BackgroundColorSpan(Color.parseColor("#FFEB3B")),
@@ -918,7 +918,7 @@ class MainActivity : AppCompatActivity() {
                             android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                         )
                         count++
-                        idx = text.indexOf(query, idx + 1, ignoreCase = true)
+                        idx = fileContent.indexOf(query, idx + 1, ignoreCase = true)
                     }
                     textView.text = spannable
                     resultCount.text = if (count > 0) "$count found" else "Not found"
