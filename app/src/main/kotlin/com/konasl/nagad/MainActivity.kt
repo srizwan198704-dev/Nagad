@@ -6,6 +6,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
 import android.app.DownloadManager
+import android.app.PictureInPictureParams
 import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
@@ -18,6 +19,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.graphics.Typeface
@@ -27,6 +29,7 @@ import android.os.*
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Base64
+import android.util.Rational
 import android.view.*
 import android.webkit.*
 import android.widget.*
@@ -72,6 +75,18 @@ class MainActivity : AppCompatActivity() {
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var originalOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
+    // PiP state
+    private var pipVideoView: VideoView? = null          // file player video in PiP
+    private var pipVideoDialog: Dialog? = null           // file player dialog reference
+    private var isInPipMode = false
+    private var pipPlayPauseBtn: Button? = null          // reference for PiP overlay button
+    private var pipHideHandler: Handler? = null
+    private var pipHideRunnable: Runnable? = null
+    private var pipControlOverlay: LinearLayout? = null
+
+    // Browser PiP: we keep reference to the WebView currently shown
+    private var browserPipWebView: WebView? = null
 
     // State Save
     private lateinit var prefs: SharedPreferences
@@ -293,43 +308,106 @@ class MainActivity : AppCompatActivity() {
         webTabs.forEach {
             try { it.webView.onResume() } catch (e: Exception) { }
         }
+        // When returning from PiP, restore UI
+        if (!isInPipMode) {
+            tabLayout.visibility = View.VISIBLE
+        }
     }
 
-    private fun saveState() {
-        if (!isUIInitialized) return
+    // ==================== PIP LIFECYCLE ====================
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPipMode = isInPictureInPictureMode
+
+        if (isInPictureInPictureMode) {
+            // Hide all UI except the video / webview
+            tabLayout.visibility = View.GONE
+            pipControlOverlay?.visibility = View.GONE
+            pipHideHandler?.removeCallbacks(pipHideRunnable ?: return)
+        } else {
+            // Exited PiP — restore UI
+            tabLayout.visibility = View.VISIBLE
+            // If the file-player dialog was dismissed while in PiP, clean up
+            if (pipVideoView != null) {
+                pipControlOverlay?.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    /** Build PiP params for file video player */
+    private fun buildFilePipParams(videoView: VideoView): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        return try {
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setSeamlessResizeEnabled(true)
+                builder.setAutoEnterEnabled(false)
+            }
+            // Source hint rect — the VideoView bounds
+            val rect = Rect()
+            videoView.getGlobalVisibleRect(rect)
+            if (!rect.isEmpty) {
+                builder.setSourceRectHint(rect)
+            }
+            builder.build()
+        } catch (e: Exception) { null }
+    }
+
+    /** Build PiP params for browser WebView */
+    private fun buildBrowserPipParams(webView: WebView): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        return try {
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setSeamlessResizeEnabled(true)
+                builder.setAutoEnterEnabled(false)
+            }
+            val rect = Rect()
+            webView.getGlobalVisibleRect(rect)
+            if (!rect.isEmpty) builder.setSourceRectHint(rect)
+            builder.build()
+        } catch (e: Exception) { null }
+    }
+
+    /** Enter PiP for the file-manager video player */
+    private fun enterFilePip(videoView: VideoView) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
-            val urls = webTabs.mapNotNull {
-                try { it.webView.url?.takeIf { u -> u.isNotEmpty() } ?: "about:blank" }
-                catch (e: Exception) { null }
-            }.toSet()
-
-            prefs.edit().apply {
-                putString(KEY_CURRENT_PATH, currentPath.absolutePath)
-                putStringSet(KEY_TAB_URLS, urls)
-                putInt(KEY_CURRENT_TAB, currentTabIndex)
-                putBoolean(KEY_IS_FILE_MANAGER, isFileManagerActive)
-                putBoolean(KEY_DESKTOP_MODE, isDesktopMode)
-                apply()
-            }
-        } catch (e: Exception) { }
+            val params = buildFilePipParams(videoView) ?: return
+            pipVideoView = videoView
+            enterPictureInPictureMode(params)
+        } catch (e: Exception) {
+            Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    private fun createTabButton(text: String, selected: Boolean, onClick: () -> Unit): TextView {
-        return TextView(this).apply {
-            this.text = text
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            typeface = Typeface.DEFAULT_BOLD
-            textSize = 14f
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-            setBackgroundColor(if (selected) Color.parseColor("#333333") else Color.TRANSPARENT)
-            setOnClickListener {
-                for (i in 0 until tabLayout.childCount) {
-                    tabLayout.getChildAt(i)?.setBackgroundColor(Color.TRANSPARENT)
-                }
-                setBackgroundColor(Color.parseColor("#333333"))
-                onClick()
+    /** Enter PiP for the browser (keeps WebView visible) */
+    private fun enterBrowserPip() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (webTabs.isEmpty()) return
+        try {
+            val wv = webTabs[currentTabIndex].webView
+            browserPipWebView = wv
+            val params = buildBrowserPipParams(wv) ?: return
+            // Pause all other tabs
+            webTabs.forEachIndexed { i, tab ->
+                if (i != currentTabIndex) try { tab.webView.onPause() } catch (e: Exception) { }
             }
+            enterPictureInPictureMode(params)
+        } catch (e: Exception) {
+            Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -597,9 +675,6 @@ class MainActivity : AppCompatActivity() {
 
     // ==================== ZIP EXTRACTOR ====================
 
-    /**
-     * Single-tap on a .zip file in the file list → shows quick options dialog
-     */
     private fun showZipOptions(file: File) {
         AlertDialog.Builder(this)
             .setTitle("🗜️ ${file.name}")
@@ -613,24 +688,16 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Extracts a ZIP file to /storage/emulated/0/DCIM/<zipFolderName>/
-     * Preserves the internal folder structure of the ZIP.
-     * Shows a progress dialog and runs on a background thread.
-     */
     private fun extractZipToDcim(zipFile: File) {
-        // Determine DCIM destination
         val dcimDir = try {
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
         } catch (e: Exception) {
             File(Environment.getExternalStorageDirectory(), "DCIM")
         }
 
-        // The root output folder is named after the zip file (without extension)
         val zipBaseName = zipFile.nameWithoutExtension
         val destRoot = File(dcimDir, zipBaseName)
 
-        // Progress dialog
         val progressDialog = AlertDialog.Builder(this)
             .setTitle("📦 Extracting…")
             .setMessage("0 files extracted")
@@ -648,14 +715,12 @@ class MainActivity : AppCompatActivity() {
                 var entry = zis.nextEntry
                 while (entry != null) {
                     try {
-                        // Sanitize entry name to prevent path traversal
                         val entryName = entry.name.replace("..", "_")
                         val outFile = File(destRoot, entryName)
 
                         if (entry.isDirectory) {
                             outFile.mkdirs()
                         } else {
-                            // Ensure parent directories exist
                             outFile.parentFile?.mkdirs()
                             FileOutputStream(outFile).use { fos ->
                                 zis.copyTo(fos, bufferSize = 8192)
@@ -699,7 +764,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // ==================== VIDEO PLAYER ====================
+    // ==================== VIDEO PLAYER (with PiP) ====================
     private fun playVideo(file: File) {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
@@ -748,6 +813,9 @@ class MainActivity : AppCompatActivity() {
             }
             rootFrame.addView(videoView)
 
+            // Store dialog reference for PiP restore
+            pipVideoDialog = dialog
+
             // ── Controls overlay (hidden by default, shown on tap) ──
             val controlOverlay = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -758,8 +826,10 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM
                 )
-                visibility = View.GONE   // hidden initially
+                visibility = View.GONE
             }
+            // Store reference for PiP hide/show
+            pipControlOverlay = controlOverlay
 
             val topControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -781,18 +851,12 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+            pipPlayPauseBtn = playPauseBtn
 
             val seekBar = SeekBar(this).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
                 )
-                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                        if (fromUser) videoView.seekTo(progress)
-                    }
-                    override fun onStartTrackingTouch(sb: SeekBar?) {}
-                    override fun onStopTrackingTouch(sb: SeekBar?) {}
-                })
             }
 
             val timeText = TextView(this).apply {
@@ -806,6 +870,7 @@ class MainActivity : AppCompatActivity() {
             topControls.addView(seekBar)
             topControls.addView(timeText)
 
+            // ── Bottom controls row (orientation + PiP + close) ──
             val orientationControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -817,7 +882,7 @@ class MainActivity : AppCompatActivity() {
                 textSize = 12f
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     setMargins(dp(4), 0, dp(4), 0)
                 }
                 setOnClickListener {
@@ -830,7 +895,7 @@ class MainActivity : AppCompatActivity() {
                 textSize = 12f
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     setMargins(dp(4), 0, dp(4), 0)
                 }
                 setOnClickListener {
@@ -839,11 +904,11 @@ class MainActivity : AppCompatActivity() {
             }
 
             val sensorBtn = Button(this).apply {
-                text = "🔄 Auto"
+                text = "🔄"
                 textSize = 12f
                 setBackgroundColor(Color.parseColor("#333333"))
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     setMargins(dp(4), 0, dp(4), 0)
                 }
                 setOnClickListener {
@@ -851,16 +916,36 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // ── PiP button for file video ──
+            val pipBtn = Button(this).apply {
+                text = "⧉ PiP"
+                textSize = 11f
+                setBackgroundColor(Color.parseColor("#1565C0"))
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
+                isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 1f else 0.4f
+                setOnClickListener {
+                    enterFilePip(videoView)
+                }
+            }
+
             val closeVideoButton = Button(this).apply {
-                text = "✕ Close"
+                text = "✕"
                 textSize = 14f
                 setBackgroundColor(Color.parseColor("#D32F2F"))
                 setTextColor(Color.WHITE)
-                layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(60), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     setMargins(dp(4), 0, dp(4), 0)
                 }
                 setOnClickListener {
                     try { videoView.stopPlayback() } catch (e: Exception) { }
+                    pipVideoView = null
+                    pipVideoDialog = null
+                    pipControlOverlay = null
+                    pipPlayPauseBtn = null
                     dialog.dismiss()
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 }
@@ -869,6 +954,7 @@ class MainActivity : AppCompatActivity() {
             orientationControls.addView(portraitBtn)
             orientationControls.addView(landscapeBtn)
             orientationControls.addView(sensorBtn)
+            orientationControls.addView(pipBtn)
             orientationControls.addView(closeVideoButton)
 
             controlOverlay.addView(topControls)
@@ -876,20 +962,22 @@ class MainActivity : AppCompatActivity() {
 
             rootFrame.addView(controlOverlay)
 
-            // Auto-hide handler: hides controls after 3 seconds of inactivity
+            // Auto-hide handler
             val hideHandler = Handler(Looper.getMainLooper())
+            pipHideHandler = hideHandler
             val hideRunnable = Runnable {
                 controlOverlay.visibility = View.GONE
             }
+            pipHideRunnable = hideRunnable
 
             fun showControlsTemporarily() {
                 hideHandler.removeCallbacks(hideRunnable)
-                controlOverlay.visibility = View.VISIBLE
+                if (!isInPipMode) controlOverlay.visibility = View.VISIBLE
                 hideHandler.postDelayed(hideRunnable, 3000L)
             }
 
-            // Toggle controls on tap (works anywhere on the video surface)
             rootFrame.setOnClickListener {
+                if (isInPipMode) return@setOnClickListener
                 if (controlOverlay.visibility == View.VISIBLE) {
                     hideHandler.removeCallbacks(hideRunnable)
                     controlOverlay.visibility = View.GONE
@@ -898,7 +986,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // SeekBar touch also resets the hide timer
             seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) videoView.seekTo(progress)
@@ -929,6 +1016,12 @@ class MainActivity : AppCompatActivity() {
             dialog.setOnDismissListener {
                 timer.cancel()
                 hideHandler.removeCallbacks(hideRunnable)
+                pipVideoView = null
+                pipVideoDialog = null
+                pipControlOverlay = null
+                pipPlayPauseBtn = null
+                pipHideHandler = null
+                pipHideRunnable = null
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
             dialog.setContentView(rootFrame)
@@ -1316,7 +1409,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // ==================== BROWSER ====================
+    // ==================== BROWSER (with PiP) ====================
     private fun createBrowserView(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1395,9 +1488,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ── Browser PiP button ──
+        val browserPipBtn = Button(this).apply {
+            text = "⧉"
+            textSize = 16f
+            isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 1f else 0.4f
+            setOnClickListener {
+                // Try to trigger native HTML5 video PiP first via JS, then fall back to app PiP
+                triggerBrowserVideoPip()
+            }
+        }
+
         urlBarLayout.addView(urlBar)
         urlBarLayout.addView(goBtn)
         urlBarLayout.addView(desktopBtn)
+        urlBarLayout.addView(browserPipBtn)
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
@@ -1418,6 +1524,61 @@ class MainActivity : AppCompatActivity() {
         layout.addView(urlLayout)
         layout.addView(webContainer)
         return layout
+    }
+
+    /**
+     * Attempts to find an HTML5 <video> element on the page and request PiP via JS.
+     * If the JS approach is not available (site blocks it), falls back to app-level PiP
+     * which floats the entire WebView.
+     */
+    private fun triggerBrowserVideoPip() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (webTabs.isEmpty()) return
+        val webView = webTabs[currentTabIndex].webView
+
+        // JS: find first playing video, request PiP on it.
+        // The JS PiP API is only available in secure contexts (HTTPS).
+        // We add a JS interface so the page can report back success/failure.
+        val js = """
+            (function() {
+                var videos = document.querySelectorAll('video');
+                for (var i = 0; i < videos.length; i++) {
+                    var v = videos[i];
+                    if (!v.paused || v.readyState >= 2) {
+                        if (document.pictureInPictureEnabled && v.requestPictureInPicture) {
+                            v.requestPictureInPicture()
+                                .then(function() { AndroidPipBridge.onSuccess(); })
+                                .catch(function(e) { AndroidPipBridge.onFallback(e.toString()); });
+                            return;
+                        }
+                    }
+                }
+                // No suitable video found – fall back
+                AndroidPipBridge.onFallback('no_video');
+            })();
+        """.trimIndent()
+
+        // Remove old interface if any, add fresh one
+        try { webView.removeJavascriptInterface("AndroidPipBridge") } catch (e: Exception) { }
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun onSuccess() {
+                // HTML5 PiP was granted by the browser — nothing extra needed from native side
+            }
+
+            @JavascriptInterface
+            fun onFallback(reason: String) {
+                runOnUiThread {
+                    // Fall back: enter app-level PiP — the entire WebView floats
+                    enterBrowserPip()
+                }
+            }
+        }, "AndroidPipBridge")
+
+        webView.evaluateJavascript(js, null)
     }
 
     private fun updateDesktopMode(webView: WebView) {
@@ -2121,10 +2282,49 @@ class MainActivity : AppCompatActivity() {
             downloadReceiver?.let { unregisterReceiver(it) }
             downloadReceiver = null
         } catch (e: Exception) { }
+        pipHideHandler?.removeCallbacks(pipHideRunnable ?: Runnable {})
         super.onDestroy()
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+    }
+
+    private fun saveState() {
+        if (!isUIInitialized) return
+        try {
+            val urls = webTabs.mapNotNull {
+                try { it.webView.url?.takeIf { u -> u.isNotEmpty() } ?: "about:blank" }
+                catch (e: Exception) { null }
+            }.toSet()
+
+            prefs.edit().apply {
+                putString(KEY_CURRENT_PATH, currentPath.absolutePath)
+                putStringSet(KEY_TAB_URLS, urls)
+                putInt(KEY_CURRENT_TAB, currentTabIndex)
+                putBoolean(KEY_IS_FILE_MANAGER, isFileManagerActive)
+                putBoolean(KEY_DESKTOP_MODE, isDesktopMode)
+                apply()
+            }
+        } catch (e: Exception) { }
+    }
+
+    private fun createTabButton(text: String, selected: Boolean, onClick: () -> Unit): TextView {
+        return TextView(this).apply {
+            this.text = text
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            textSize = 14f
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+            setBackgroundColor(if (selected) Color.parseColor("#333333") else Color.TRANSPARENT)
+            setOnClickListener {
+                for (i in 0 until tabLayout.childCount) {
+                    tabLayout.getChildAt(i)?.setBackgroundColor(Color.TRANSPARENT)
+                }
+                setBackgroundColor(Color.parseColor("#333333"))
+                onClick()
+            }
+        }
     }
 }
