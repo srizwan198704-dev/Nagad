@@ -43,6 +43,7 @@ import java.net.URL
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity() {
 
@@ -448,6 +449,7 @@ class MainActivity : AppCompatActivity() {
                                 || file.name.endsWith(".avi", true) -> "🎬"
                         file.name.endsWith(".pdf", true) -> "📕"
                         file.name.endsWith(".txt", true) -> "📝"
+                        file.name.endsWith(".zip", true) -> "🗜️"
                         isImageFile(file.name) -> "🖼️"
                         else -> "📄"
                     }
@@ -477,6 +479,7 @@ class MainActivity : AppCompatActivity() {
                             || file.name.endsWith(".avi", true) -> playVideo(file)
                     file.name.endsWith(".txt", true) -> openTextFile(file)
                     file.name.endsWith(".pdf", true) -> openPdfFile(file)
+                    file.name.endsWith(".zip", true) -> showZipOptions(file)
                     isImageFile(file.name) -> openImageFile(file)
                     else -> Toast.makeText(
                         this@MainActivity, "Unsupported file", Toast.LENGTH_SHORT
@@ -526,6 +529,7 @@ class MainActivity : AppCompatActivity() {
     private fun showFileOptions(file: File) {
         val options = mutableListOf("Delete", "Rename", "Details")
         if (file.name.endsWith(".pdf", true)) options.add(1, "PDF to JPG")
+        if (file.name.endsWith(".zip", true)) options.add(1, "Extract ZIP to DCIM")
 
         AlertDialog.Builder(this)
             .setTitle(file.name)
@@ -534,6 +538,7 @@ class MainActivity : AppCompatActivity() {
                     "Delete" -> deleteFile(file)
                     "Rename" -> renameFile(file)
                     "PDF to JPG" -> pdfToJpg(file)
+                    "Extract ZIP to DCIM" -> extractZipToDcim(file)
                     "Details" -> showDetails(file)
                 }
             }
@@ -590,6 +595,110 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ==================== ZIP EXTRACTOR ====================
+
+    /**
+     * Single-tap on a .zip file in the file list → shows quick options dialog
+     */
+    private fun showZipOptions(file: File) {
+        AlertDialog.Builder(this)
+            .setTitle("🗜️ ${file.name}")
+            .setItems(arrayOf("Extract to DCIM", "Details")) { _, which ->
+                when (which) {
+                    0 -> extractZipToDcim(file)
+                    1 -> showDetails(file)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Extracts a ZIP file to /storage/emulated/0/DCIM/<zipFolderName>/
+     * Preserves the internal folder structure of the ZIP.
+     * Shows a progress dialog and runs on a background thread.
+     */
+    private fun extractZipToDcim(zipFile: File) {
+        // Determine DCIM destination
+        val dcimDir = try {
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+        } catch (e: Exception) {
+            File(Environment.getExternalStorageDirectory(), "DCIM")
+        }
+
+        // The root output folder is named after the zip file (without extension)
+        val zipBaseName = zipFile.nameWithoutExtension
+        val destRoot = File(dcimDir, zipBaseName)
+
+        // Progress dialog
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle("📦 Extracting…")
+            .setMessage("0 files extracted")
+            .setCancelable(false)
+            .create()
+        progressDialog.show()
+
+        Thread {
+            var extracted = 0
+            var failed = 0
+            try {
+                destRoot.mkdirs()
+
+                val zis = ZipInputStream(zipFile.inputStream().buffered())
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    try {
+                        // Sanitize entry name to prevent path traversal
+                        val entryName = entry.name.replace("..", "_")
+                        val outFile = File(destRoot, entryName)
+
+                        if (entry.isDirectory) {
+                            outFile.mkdirs()
+                        } else {
+                            // Ensure parent directories exist
+                            outFile.parentFile?.mkdirs()
+                            FileOutputStream(outFile).use { fos ->
+                                zis.copyTo(fos, bufferSize = 8192)
+                            }
+                            extracted++
+                            val count = extracted
+                            runOnUiThread {
+                                progressDialog.setMessage("$count files extracted…")
+                            }
+                        }
+                        zis.closeEntry()
+                    } catch (entryEx: Exception) {
+                        failed++
+                        try { zis.closeEntry() } catch (_: Exception) {}
+                    }
+                    entry = try { zis.nextEntry } catch (_: Exception) { null }
+                }
+                zis.close()
+
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    val msg = if (failed == 0) {
+                        "✅ $extracted files extracted to\nDCIM/$zipBaseName"
+                    } else {
+                        "✅ $extracted extracted, ⚠️ $failed failed\nDCIM/$zipBaseName"
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("Extraction Complete")
+                        .setMessage(msg)
+                        .setPositiveButton("OK", null)
+                        .show()
+                    loadFiles(currentPath)
+                }
+
+            } catch (e: Exception) {
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    Toast.makeText(this, "ZIP error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
     // ==================== VIDEO PLAYER ====================
     private fun playVideo(file: File) {
         try {
@@ -639,6 +748,7 @@ class MainActivity : AppCompatActivity() {
             }
             rootFrame.addView(videoView)
 
+            // ── Controls overlay (hidden by default, shown on tap) ──
             val controlOverlay = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.parseColor("#CC000000"))
@@ -648,6 +758,7 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.BOTTOM
                 )
+                visibility = View.GONE   // hidden initially
             }
 
             val topControls = LinearLayout(this).apply {
@@ -765,6 +876,37 @@ class MainActivity : AppCompatActivity() {
 
             rootFrame.addView(controlOverlay)
 
+            // Auto-hide handler: hides controls after 3 seconds of inactivity
+            val hideHandler = Handler(Looper.getMainLooper())
+            val hideRunnable = Runnable {
+                controlOverlay.visibility = View.GONE
+            }
+
+            fun showControlsTemporarily() {
+                hideHandler.removeCallbacks(hideRunnable)
+                controlOverlay.visibility = View.VISIBLE
+                hideHandler.postDelayed(hideRunnable, 3000L)
+            }
+
+            // Toggle controls on tap (works anywhere on the video surface)
+            rootFrame.setOnClickListener {
+                if (controlOverlay.visibility == View.VISIBLE) {
+                    hideHandler.removeCallbacks(hideRunnable)
+                    controlOverlay.visibility = View.GONE
+                } else {
+                    showControlsTemporarily()
+                }
+            }
+
+            // SeekBar touch also resets the hide timer
+            seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) videoView.seekTo(progress)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) { hideHandler.removeCallbacks(hideRunnable) }
+                override fun onStopTrackingTouch(sb: SeekBar?) { showControlsTemporarily() }
+            })
+
             val timer = Timer()
             timer.schedule(object : TimerTask() {
                 override fun run() {
@@ -786,6 +928,7 @@ class MainActivity : AppCompatActivity() {
 
             dialog.setOnDismissListener {
                 timer.cancel()
+                hideHandler.removeCallbacks(hideRunnable)
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
             dialog.setContentView(rootFrame)
@@ -1630,7 +1773,6 @@ class MainActivity : AppCompatActivity() {
                 .setView(dialogView)
                 .setPositiveButton("Download") { _, _ ->
                     val inputName = fileNameInput.text.toString().trim()
-                    // FIX: use a single val computed once, no reassignment
                     val fileName = sanitizeFileName(inputName.ifBlank { defaultFileName })
 
                     try {
