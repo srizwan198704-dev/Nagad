@@ -22,21 +22,30 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Rect
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraManager
+import android.net.Uri
+import android.os.*
+import android.provider.ContactsContract
+import android.provider.MediaStore
+import android.provider.Settings
+import android.provider.Telephony
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import android.telephony.PhoneStateListener
+import android.telephony.SmsManager
+import android.telephony.TelephonyManager
+import android.text.format.DateUtils
+import android.util.Base64
+import android.util.Rational
+import android.view.*
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.graphics.Typeface
 import android.graphics.pdf.PdfRenderer
 import android.media.AudioAttributes
 import android.media.RingtoneManager
-import android.net.Uri
-import android.os.*
-import android.provider.MediaStore
-import android.provider.Settings
-import android.service.notification.NotificationListenerService
-import android.service.notification.StatusBarNotification
-import android.util.Base64
-import android.util.Rational
-import android.view.*
+import android.util.Log
 import android.webkit.*
 import android.widget.*
 import android.widget.VideoView
@@ -60,29 +69,17 @@ class WhatsAppNotificationListener : NotificationListenerService() {
 
     companion object {
         private val SUPPORTED_PACKAGES = setOf(
-            // WhatsApp variants
-            "com.whatsapp",
-            "com.whatsapp.w4b",
-            "com.gbwhatsapp",
-            "com.whatsapp.business",
-            // Facebook Messenger variants
-            "com.facebook.orca",
-            "com.facebook.mlite",
-            "com.facebook.messenger.lite",
-            "org.telegram.messenger",
-            "org.telegram.messenger.web"
+            "com.whatsapp", "com.whatsapp.w4b", "com.gbwhatsapp", "com.whatsapp.business",
+            "com.facebook.orca", "com.facebook.mlite", "com.facebook.messenger.lite",
+            "org.telegram.messenger", "org.telegram.messenger.web"
         )
-
         const val ACTION_CHAT_MESSAGE = "com.konasl.nagad.CHAT_MESSAGE"
         const val EXTRA_SENDER = "sender"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_APP = "app"
 
         fun isEnabled(context: Context): Boolean {
-            val flat = Settings.Secure.getString(
-                context.contentResolver,
-                "enabled_notification_listeners"
-            ) ?: return false
+            val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: return false
             val cn = ComponentName(context, WhatsAppNotificationListener::class.java)
             return flat.contains(cn.flattenToString())
         }
@@ -98,13 +95,10 @@ class WhatsAppNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn ?: return
         if (sbn.packageName !in SUPPORTED_PACKAGES) return
-
         val extras = sbn.notification?.extras ?: return
         val sender  = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
         val message = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()  ?: ""
-
         if (sender.isEmpty() && message.isEmpty()) return
-
         val intent = Intent(ACTION_CHAT_MESSAGE).apply {
             putExtra(EXTRA_SENDER, sender)
             putExtra(EXTRA_MESSAGE, message)
@@ -121,18 +115,20 @@ class WhatsAppNotificationListener : NotificationListenerService() {
 
 class MainActivity : AppCompatActivity() {
 
+    // ── Core layout ──────────────────────────────────────────────
     private lateinit var rootLayout: LinearLayout
     private lateinit var tabLayout: LinearLayout
     private lateinit var contentFrame: FrameLayout
+
+    // ── File manager ─────────────────────────────────────────────
     private lateinit var fileManagerView: LinearLayout
-    private lateinit var browserView: LinearLayout
     private lateinit var fileListView: ListView
     private var currentPath: File = Environment.getExternalStorageDirectory()
     private lateinit var pathText: TextView
     private lateinit var storageInfo: TextView
-    private var isFileManagerActive = true
 
-    // Browser Components
+    // ── Browser ──────────────────────────────────────────────────
+    private lateinit var browserView: LinearLayout
     private lateinit var tabContainer: LinearLayout
     private lateinit var tabScroll: HorizontalScrollView
     private val webTabs = mutableListOf<WebTab>()
@@ -141,15 +137,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var webContainer: FrameLayout
 
-    // Per-tab desktop mode (FIX: was global, now per-tab)
+    // ── Phone / SMS / Contacts / Flashlight ──────────────────────
+    private lateinit var dialerView: LinearLayout
+    private lateinit var smsView: LinearLayout
+    private var isTorchOn = false
+    private var cameraManager: CameraManager? = null
+    private var cameraId: String? = null
+    private var torchCallback: CameraManager.TorchCallback? = null
+
+    // ── State flags ───────────────────────────────────────────────
+    private var isFileManagerActive = true
+    private var activeSection = "files"   // "files" | "browser" | "dialer" | "sms"
     private var globalDesktopMode = false
 
-    // Fullscreen Video
+    // ── Fullscreen video ─────────────────────────────────────────
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var originalOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 
-    // PiP state
+    // ── PiP ──────────────────────────────────────────────────────
     private var pipVideoView: VideoView? = null
     private var pipVideoDialog: Dialog? = null
     private var isInPipMode = false
@@ -157,72 +163,72 @@ class MainActivity : AppCompatActivity() {
     private var pipHideHandler: Handler? = null
     private var pipHideRunnable: Runnable? = null
     private var pipControlOverlay: LinearLayout? = null
-
-    // Browser PiP
     private var browserPipWebView: WebView? = null
-
-    // App-wide PiP
     private var appPipModeEnabled = false
     private val KEY_APP_PIP_MODE = "app_pip_mode"
 
-    // State Save
+    // ── Prefs ────────────────────────────────────────────────────
     private lateinit var prefs: SharedPreferences
-    private val KEY_CURRENT_PATH   = "current_path"
-    private val KEY_TAB_URLS       = "tab_urls"
-    private val KEY_CURRENT_TAB    = "current_tab"
+    private val KEY_CURRENT_PATH    = "current_path"
+    private val KEY_TAB_URLS        = "tab_urls"
+    private val KEY_CURRENT_TAB     = "current_tab"
     private val KEY_IS_FILE_MANAGER = "is_file_manager"
-    private val KEY_DESKTOP_MODE   = "desktop_mode"
+    private val KEY_DESKTOP_MODE    = "desktop_mode"
 
-    // UI init flag
     private var isUIInitialized = false
 
-    // Download tracking
+    // ── Downloads ────────────────────────────────────────────────
     private val activeDownloads = mutableMapOf<Long, String>()
     private var downloadReceiver: BroadcastReceiver? = null
 
-    // Chat notification receiver (WhatsApp + Messenger)
+    // ── Notification / Chat receiver ─────────────────────────────
     private var chatReceiver: BroadcastReceiver? = null
+
+    // ── Permissions ──────────────────────────────────────────────
+    private val PERM_CALL    = Manifest.permission.CALL_PHONE
+    private val PERM_SMS_R   = Manifest.permission.READ_SMS
+    private val PERM_SMS_S   = Manifest.permission.SEND_SMS
+    private val PERM_SMS_R2  = Manifest.permission.RECEIVE_SMS
+    private val PERM_CONTACTS = Manifest.permission.READ_CONTACTS
+    private val PERM_PHONE_S = Manifest.permission.READ_PHONE_STATE
+
+    private val REQ_CALL     = 201
+    private val REQ_SMS      = 202
+    private val REQ_CONTACTS = 203
 
     data class WebTab(
         val webView: WebView,
         var title: String = "New Tab",
         var url: String = "",
-        var isDesktopMode: Boolean = false   // FIX: per-tab desktop mode
+        var isDesktopMode: Boolean = false
     )
 
-    // File upload callback
+    // ── File upload ──────────────────────────────────────────────
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
-
-    private val fileChooserLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
+    private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val cb = fileUploadCallback ?: return@registerForActivityResult
         fileUploadCallback = null
-        val results = if (result.resultCode == Activity.RESULT_OK && result.data?.data != null) {
-            arrayOf(result.data!!.data!!)
-        } else null
+        val results = if (result.resultCode == Activity.RESULT_OK && result.data?.data != null) arrayOf(result.data!!.data!!) else null
         cb.onReceiveValue(results)
     }
 
-    private val storagePermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
+    private val storagePermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (Environment.isExternalStorageManager()) showPipModeDialog()
             else { Toast.makeText(this, "Storage permission required", Toast.LENGTH_SHORT).show(); showPipModeDialog() }
         }
     }
 
-    private val notificationAccessLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
+    private val notificationAccessLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (WhatsAppNotificationListener.isEnabled(this)) {
             Toast.makeText(this, "✅ নোটিফিকেশন অ্যাক্সেস চালু হয়েছে", Toast.LENGTH_SHORT).show()
             registerChatReceiver()
         }
     }
 
-    // ==================== LIFECYCLE ====================
+    // =====================================================================
+    // LIFECYCLE
+    // =====================================================================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -230,16 +236,14 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("app_state", MODE_PRIVATE)
         globalDesktopMode = prefs.getBoolean(KEY_DESKTOP_MODE, false)
         appPipModeEnabled = prefs.getBoolean(KEY_APP_PIP_MODE, false)
+        initCamera()
         checkPermissionAndShowDialog()
     }
 
     override fun onStart() {
         super.onStart()
-        if (!WhatsAppNotificationListener.isEnabled(this)) {
-            requestNotificationAccess()
-        } else {
-            registerChatReceiver()
-        }
+        if (!WhatsAppNotificationListener.isEnabled(this)) requestNotificationAccess()
+        else registerChatReceiver()
     }
 
     override fun onStop() {
@@ -247,21 +251,90 @@ class MainActivity : AppCompatActivity() {
         unregisterChatReceiver()
     }
 
-    // ==================== PiP MODE DIALOG ====================
+    override fun onPause() {
+        super.onPause()
+        saveState()
+        webTabs.forEach { try { it.webView.onPause() } catch (e: Exception) { } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webTabs.getOrNull(currentTabIndex)?.let { try { it.webView.onResume() } catch (e: Exception) { } }
+        if (!isInPipMode) tabLayout.visibility = View.VISIBLE
+    }
+
+    override fun onDestroy() {
+        try {
+            saveState()
+            webTabs.forEach { try { it.webView.stopLoading(); it.webView.destroy() } catch (e: Exception) { } }
+            webTabs.clear()
+        } catch (e: Exception) { }
+        try { downloadReceiver?.let { unregisterReceiver(it) }; downloadReceiver = null } catch (e: Exception) { }
+        unregisterChatReceiver()
+        releaseTorch()
+        pipHideHandler?.removeCallbacks(pipHideRunnable ?: Runnable { })
+        super.onDestroy()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+    }
+
+    // =====================================================================
+    // CAMERA / FLASHLIGHT
+    // =====================================================================
+
+    private fun initCamera() {
+        try {
+            cameraManager = getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+            cameraId = cameraManager?.cameraIdList?.firstOrNull { id ->
+                cameraManager!!.getCameraCharacteristics(id)
+                    .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+        } catch (e: Exception) {
+            Log.e("Torch", "initCamera error: ${e.message}")
+        }
+    }
+
+    private fun toggleTorch(btn: Button?) {
+        if (cameraManager == null || cameraId == null) {
+            Toast.makeText(this, "Flashlight not available", Toast.LENGTH_SHORT).show(); return
+        }
+        try {
+            isTorchOn = !isTorchOn
+            cameraManager!!.setTorchMode(cameraId!!, isTorchOn)
+            btn?.text = if (isTorchOn) "🔦 OFF" else "🔦 ON"
+            btn?.setBackgroundColor(if (isTorchOn) Color.parseColor("#FFC107") else Color.parseColor("#444444"))
+        } catch (e: CameraAccessException) {
+            Toast.makeText(this, "Torch error: ${e.message}", Toast.LENGTH_SHORT).show()
+            isTorchOn = false
+        } catch (e: Exception) {
+            Toast.makeText(this, "Torch error: ${e.message}", Toast.LENGTH_SHORT).show()
+            isTorchOn = false
+        }
+    }
+
+    private fun releaseTorch() {
+        try {
+            if (isTorchOn && cameraId != null) {
+                cameraManager?.setTorchMode(cameraId!!, false)
+                isTorchOn = false
+            }
+        } catch (e: Exception) { }
+    }
+
+    // =====================================================================
+    // PIP MODE DIALOG
+    // =====================================================================
 
     private fun showPipModeDialog() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            appPipModeEnabled = false
-            initUI()
-            return
-        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) { appPipModeEnabled = false; initUI(); return }
 
         val dialogView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#1A1A2E"))
             setPadding(dp(0), dp(8), dp(0), dp(8))
         }
-
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#16213E"))
@@ -278,7 +351,6 @@ class MainActivity : AppCompatActivity() {
         }
         header.addView(titleIcon); header.addView(titleText); header.addView(subtitleText)
         dialogView.addView(header)
-
         dialogView.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
             setBackgroundColor(Color.parseColor("#0F3460"))
@@ -289,13 +361,10 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(16), dp(16), dp(16))
             setBackgroundColor(Color.parseColor("#1A1A2E"))
         }
-
         val normalCard = createModeCard("🖥️", "Normal Mode",
-            "পূর্ণ স্ক্রিনে অ্যাপ চালান\nসব ফিচার সম্পূর্ণভাবে ব্যবহার করুন",
-            "#4CAF50", !appPipModeEnabled)
+            "পূর্ণ স্ক্রিনে অ্যাপ চালান\nসব ফিচার সম্পূর্ণভাবে ব্যবহার করুন", "#4CAF50", !appPipModeEnabled)
         val pipCard = createModeCard("⧉", "PiP Mode (Picture-in-Picture)",
-            "ছোট ভাসমান উইন্ডোতে অ্যাপ চালান\nঅন্য অ্যাপ ব্যবহারের সময়ও দেখা যাবে",
-            "#2196F3", appPipModeEnabled)
+            "ছোট ভাসমান উইন্ডোতে অ্যাপ চালান\nঅন্য অ্যাপ ব্যবহারের সময়ও দেখা যাবে", "#2196F3", appPipModeEnabled)
 
         var selectedNormal = !appPipModeEnabled
         var selectedPip    = appPipModeEnabled
@@ -332,17 +401,15 @@ class MainActivity : AppCompatActivity() {
         val confirmBtn = Button(this).apply {
             text = "✓  শুরু করুন"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#6200EE"))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
-            ).apply { setMargins(dp(16), 0, dp(16), dp(16)) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                setMargins(dp(16), 0, dp(16), dp(16))
+            }
             setOnClickListener {
                 appPipModeEnabled = selectedPip
                 prefs.edit().putBoolean(KEY_APP_PIP_MODE, appPipModeEnabled).apply()
                 dialog.dismiss()
                 initUI()
-                if (appPipModeEnabled) {
-                    Handler(Looper.getMainLooper()).postDelayed({ enterAppWidePip() }, 800)
-                }
+                if (appPipModeEnabled) Handler(Looper.getMainLooper()).postDelayed({ enterAppWidePip() }, 800)
             }
         }
         optionsLayout.addView(View(this).apply {
@@ -402,15 +469,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== APP-WIDE PiP ====================
+    // =====================================================================
+    // APP-WIDE PIP
+    // =====================================================================
 
     private fun enterAppWidePip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show(); return
         }
         try {
-            val builder = PictureInPictureParams.Builder()
-            builder.setAspectRatio(Rational(9, 16))
+            val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(9, 16))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 builder.setSeamlessResizeEnabled(true); builder.setAutoEnterEnabled(false)
             }
@@ -422,21 +490,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== NOTIFICATION SYSTEM ====================
+    // =====================================================================
+    // NOTIFICATION SYSTEM
+    // =====================================================================
 
     private fun requestNotificationAccess() {
         AlertDialog.Builder(this)
             .setTitle("📱 Notification Access")
-            .setMessage(
-                "WhatsApp ও Messenger মেসেজের Toast দেখাতে হলে Notification Access অনুমতি দিতে হবে।\n\n" +
-                "Settings → Notification Access → এই অ্যাপ চালু করুন।"
-            )
+            .setMessage("WhatsApp ও Messenger মেসেজের Toast দেখাতে হলে Notification Access অনুমতি দিতে হবে।\n\nSettings → Notification Access → এই অ্যাপ চালু করুন।")
             .setPositiveButton("Settings খুলুন") { _, _ ->
-                try {
-                    notificationAccessLauncher.launch(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                } catch (e: Exception) {
-                    Toast.makeText(this, "Settings খুলতে পারেনি", Toast.LENGTH_SHORT).show()
-                }
+                try { notificationAccessLauncher.launch(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                catch (e: Exception) { Toast.makeText(this, "Settings খুলতে পারেনি", Toast.LENGTH_SHORT).show() }
             }
             .setNegativeButton("এখন না", null).show()
     }
@@ -470,24 +534,12 @@ class MainActivity : AppCompatActivity() {
     private fun showChatToast(sender: String, message: String, app: String) {
         runOnUiThread {
             try {
-                val accentColor = when (app) {
-                    "WhatsApp"  -> "#25D366"
-                    "Messenger" -> "#0084FF"
-                    "Telegram"  -> "#2CA5E0"
-                    else        -> "#888888"
-                }
-                val appIcon = when (app) {
-                    "WhatsApp"  -> "💬"
-                    "Messenger" -> "💙"
-                    "Telegram"  -> "✈️"
-                    else        -> "📨"
-                }
-
+                val accentColor = when (app) { "WhatsApp" -> "#25D366"; "Messenger" -> "#0084FF"; "Telegram" -> "#2CA5E0"; else -> "#888888" }
+                val appIcon = when (app) { "WhatsApp" -> "💬"; "Messenger" -> "💙"; "Telegram" -> "✈️"; else -> "📨" }
                 val container = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     setBackgroundColor(Color.parseColor("#1A1A1A"))
-                    setPadding(dp(14), dp(12), dp(14), dp(12))
-                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(12), dp(14), dp(12)); gravity = Gravity.CENTER_VERTICAL
                 }
                 val accent = View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(dp(4), dp(48)).apply { setMargins(0, 0, dp(12), 0) }
@@ -498,8 +550,7 @@ class MainActivity : AppCompatActivity() {
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 }
                 val senderView = TextView(this).apply {
-                    text = "$appIcon $sender"
-                    setTextColor(Color.parseColor(accentColor))
+                    text = "$appIcon $sender"; setTextColor(Color.parseColor(accentColor))
                     textSize = 13f; typeface = Typeface.DEFAULT_BOLD
                 }
                 val msgView = TextView(this).apply {
@@ -508,7 +559,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 textBlock.addView(senderView); textBlock.addView(msgView)
                 container.addView(accent); container.addView(textBlock)
-
                 val toast = Toast(this)
                 @Suppress("DEPRECATION")
                 toast.view = container
@@ -528,14 +578,15 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 ringtone.audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
             }
             ringtone.play()
         } catch (e: Exception) { }
     }
 
-    // ==================== PERMISSION & INIT ====================
+    // =====================================================================
+    // PERMISSION & INIT
+    // =====================================================================
 
     private fun checkPermissionAndShowDialog() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -560,7 +611,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        showPipModeDialog()
+        when (requestCode) {
+            100  -> showPipModeDialog()
+            REQ_CALL -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "Call permission granted", Toast.LENGTH_SHORT).show()
+                } else Toast.makeText(this, "Call permission denied", Toast.LENGTH_SHORT).show()
+            }
+            REQ_SMS -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    refreshSmsView()
+                } else Toast.makeText(this, "SMS permission denied", Toast.LENGTH_SHORT).show()
+            }
+            REQ_CONTACTS -> { /* refreshed on next open */ }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -578,20 +642,26 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#F5F5F5"))
         }
 
+        // ── Main 5-tab bar ──────────────────────────────────────
         tabLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#1A1A1A"))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
         }
 
-        val fileTab    = createTabButton("📁 Files",   true)  { switchToFileManager() }
-        val browserTab = createTabButton("🌐 Browser", false) { switchToBrowser() }
-        val pipIndicatorBtn = createTabButton(if (appPipModeEnabled) "⧉ PiP ON" else "", false) {
+        val fileTab    = createTabButton("📁 Files",   true)  { switchToSection("files")   }
+        val browserTab = createTabButton("🌐 Browser", false) { switchToSection("browser") }
+        val dialerTab  = createTabButton("📞 Phone",   false) { switchToSection("dialer")  }
+        val smsTab     = createTabButton("💬 SMS",     false) { switchToSection("sms")     }
+        val pipIndicatorBtn = createTabButton(if (appPipModeEnabled) "⧉ PiP" else "", false) {
             if (appPipModeEnabled) enterAppWidePip()
         }
         pipIndicatorBtn.visibility = if (appPipModeEnabled) View.VISIBLE else View.GONE
 
-        tabLayout.addView(fileTab); tabLayout.addView(browserTab)
+        tabLayout.addView(fileTab)
+        tabLayout.addView(browserTab)
+        tabLayout.addView(dialerTab)
+        tabLayout.addView(smsTab)
         if (appPipModeEnabled) tabLayout.addView(pipIndicatorBtn)
 
         contentFrame = FrameLayout(this).apply {
@@ -600,8 +670,13 @@ class MainActivity : AppCompatActivity() {
 
         fileManagerView = createFileManagerView()
         browserView     = createBrowserView()
+        dialerView      = createDialerView()
+        smsView         = createSmsView()
+
         contentFrame.addView(fileManagerView)
         contentFrame.addView(browserView)
+        contentFrame.addView(dialerView)
+        contentFrame.addView(smsView)
 
         rootLayout.addView(tabLayout)
         rootLayout.addView(contentFrame)
@@ -632,8 +707,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         val savedIsFileManager = prefs.getBoolean(KEY_IS_FILE_MANAGER, true)
-        if (savedIsFileManager) { switchToFileManager(); highlightTab(0) }
-        else                    { switchToBrowser();     highlightTab(1) }
+        switchToSection(if (savedIsFileManager) "files" else "browser")
+    }
+
+    private fun switchToSection(section: String) {
+        activeSection = section
+        isFileManagerActive = (section == "files")
+        fileManagerView.visibility = View.GONE
+        browserView.visibility     = View.GONE
+        dialerView.visibility      = View.GONE
+        smsView.visibility         = View.GONE
+
+        when (section) {
+            "files"   -> { fileManagerView.visibility = View.VISIBLE; highlightTab(0) }
+            "browser" -> { browserView.visibility = View.VISIBLE;     highlightTab(1)
+                if (currentTabIndex in webTabs.indices) try { webTabs[currentTabIndex].webView.onResume() } catch (e: Exception) { } }
+            "dialer"  -> { dialerView.visibility = View.VISIBLE;      highlightTab(2) }
+            "sms"     -> {
+                smsView.visibility = View.VISIBLE
+                highlightTab(3)
+                refreshSmsView()
+            }
+        }
     }
 
     private fun highlightTab(activeIndex: Int) {
@@ -644,28 +739,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onPause() {
-        super.onPause()
-        saveState()
-        // FIX: Pause all webviews on pause
-        webTabs.forEach { try { it.webView.onPause() } catch (e: Exception) { } }
-    }
+    // =====================================================================
+    // PIP LIFECYCLE
+    // =====================================================================
 
-    override fun onResume() {
-        super.onResume()
-        // FIX: Only resume the current tab's webview
-        webTabs.getOrNull(currentTabIndex)?.let {
-            try { it.webView.onResume() } catch (e: Exception) { }
-        }
-        if (!isInPipMode) tabLayout.visibility = View.VISIBLE
-    }
-
-    // ==================== PIP LIFECYCLE ====================
-
-    override fun onPictureInPictureModeChanged(
-        isInPictureInPictureMode: Boolean,
-        newConfig: android.content.res.Configuration
-    ) {
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPipMode = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
@@ -697,9 +775,7 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
         return try {
             val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setSeamlessResizeEnabled(true); builder.setAutoEnterEnabled(false)
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { builder.setSeamlessResizeEnabled(true); builder.setAutoEnterEnabled(false) }
             val rect = Rect(); videoView.getGlobalVisibleRect(rect)
             if (!rect.isEmpty) builder.setSourceRectHint(rect)
             builder.build()
@@ -710,9 +786,7 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
         return try {
             val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setSeamlessResizeEnabled(true); builder.setAutoEnterEnabled(false)
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { builder.setSeamlessResizeEnabled(true); builder.setAutoEnterEnabled(false) }
             val rect = Rect(); webView.getGlobalVisibleRect(rect)
             if (!rect.isEmpty) builder.setSourceRectHint(rect)
             builder.build()
@@ -727,9 +801,7 @@ class MainActivity : AppCompatActivity() {
             val params = buildFilePipParams(videoView) ?: return
             pipVideoView = videoView
             enterPictureInPictureMode(params)
-        } catch (e: Exception) {
-            Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
     private fun enterBrowserPip() {
@@ -745,17 +817,16 @@ class MainActivity : AppCompatActivity() {
                 if (i != currentTabIndex) try { tab.webView.onPause() } catch (e: Exception) { }
             }
             enterPictureInPictureMode(params)
-        } catch (e: Exception) {
-            Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
-    // ==================== CUSTOM URL SCHEME HANDLER ====================
+    // =====================================================================
+    // CUSTOM URL SCHEME
+    // =====================================================================
 
     private fun handleCustomScheme(view: WebView, url: String): Boolean {
         val uri = try { Uri.parse(url) } catch (e: Exception) { return false }
         val scheme = uri.scheme?.lowercase() ?: return false
-
         if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "data") return false
         if (scheme == "javascript") return true
         if (scheme == "intent") return handleIntentScheme(url)
@@ -792,21 +863,16 @@ class MainActivity : AppCompatActivity() {
                 @Suppress("DEPRECATION")
                 pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
             }
-            if (resolved != null) {
-                startActivity(intent); true
-            } else {
+            if (resolved != null) { startActivity(intent); true }
+            else {
                 val fallbackUrl = intent.getStringExtra("browser_fallback_url")
                 if (!fallbackUrl.isNullOrEmpty()) {
-                    webTabs.getOrNull(currentTabIndex)?.webView?.loadUrl(fallbackUrl)
-                    return true
+                    webTabs.getOrNull(currentTabIndex)?.webView?.loadUrl(fallbackUrl); return true
                 }
                 val pkg = intent.`package`
-                if (!pkg.isNullOrEmpty()) {
-                    tryLaunchIntent(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$pkg")),
-                        intentUrl, "market"
-                    )
-                } else true
+                if (!pkg.isNullOrEmpty()) tryLaunchIntent(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$pkg")), intentUrl, "market"
+                ) else true
             }
         } catch (e: Exception) { true }
     }
@@ -838,7 +904,758 @@ class MainActivity : AppCompatActivity() {
         else              -> null
     }
 
-    // ==================== FILE MANAGER ====================
+    // =====================================================================
+    // ██████████  DIALER SECTION  ██████████
+    // =====================================================================
+
+    private var dialInput: EditText? = null
+    private var torchBtn: Button? = null
+
+    private fun createDialerView(): LinearLayout {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#121212"))
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+
+        // ── Header ──
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val headerTitle = TextView(this).apply {
+            text = "📞 Phone & Flashlight"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        torchBtn = Button(this).apply {
+            text = "🔦 ON"
+            setBackgroundColor(Color.parseColor("#444444"))
+            setTextColor(Color.WHITE); textSize = 13f
+            layoutParams = LinearLayout.LayoutParams(dp(90), dp(40))
+            setOnClickListener { toggleTorch(this) }
+        }
+        header.addView(headerTitle)
+        header.addView(torchBtn)
+        layout.addView(header)
+
+        // ── Scroll ──
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+            setBackgroundColor(Color.parseColor("#121212"))
+        }
+
+        // ── Display field ──
+        dialInput = EditText(this).apply {
+            hint = "Number / name"; textSize = 22f; gravity = Gravity.CENTER
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            isFocusable = true; isFocusableInTouchMode = true
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60))
+        }
+        inner.addView(dialInput)
+        inner.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10))
+        })
+
+        // ── Numpad ──
+        val numpadRows = listOf(listOf("1","2","3"), listOf("4","5","6"), listOf("7","8","9"), listOf("*","0","#"))
+        for (row in numpadRows) {
+            val rowLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply {
+                    setMargins(0, dp(4), 0, dp(4))
+                }
+            }
+            for (digit in row) {
+                val btn = Button(this).apply {
+                    text = digit; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#2A2A2A"))
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                        setMargins(dp(4), 0, dp(4), 0)
+                    }
+                    setOnClickListener { dialInput?.append(digit) }
+                }
+                rowLayout.addView(btn)
+            }
+            inner.addView(rowLayout)
+        }
+
+        // ── Action row ──
+        inner.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
+        })
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64))
+        }
+
+        val deleteBtn = Button(this).apply {
+            text = "⌫"; textSize = 22f; setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#333333"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                setMargins(dp(4), 0, dp(4), 0)
+            }
+            setOnClickListener {
+                val s = dialInput?.text ?: return@setOnClickListener
+                if (s.isNotEmpty()) dialInput?.setText(s.dropLast(1))
+            }
+            setOnLongClickListener { dialInput?.setText(""); true }
+        }
+        val callBtn = Button(this).apply {
+            text = "📞 Call"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#4CAF50"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2f).apply {
+                setMargins(dp(4), 0, dp(4), 0)
+            }
+            setOnClickListener { makeCall() }
+        }
+        val contactsBtn = Button(this).apply {
+            text = "👤"; textSize = 22f; setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1565C0"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                setMargins(dp(4), 0, dp(4), 0)
+            }
+            setOnClickListener { openContactPicker() }
+        }
+        actionRow.addView(deleteBtn); actionRow.addView(callBtn); actionRow.addView(contactsBtn)
+        inner.addView(actionRow)
+
+        // ── Recent calls ──
+        inner.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(16))
+        })
+        val recentTitle = TextView(this).apply {
+            text = "📋 Recent Calls"; textSize = 14f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#AAAAAA")); setPadding(0, 0, 0, dp(8))
+        }
+        inner.addView(recentTitle)
+        inner.addView(buildRecentCallsView())
+
+        scroll.addView(inner)
+        layout.addView(scroll)
+        return layout
+    }
+
+    private fun makeCall() {
+        val number = dialInput?.text?.toString()?.trim() ?: return
+        if (number.isEmpty()) { Toast.makeText(this, "নম্বর লিখুন", Toast.LENGTH_SHORT).show(); return }
+        if (ContextCompat.checkSelfPermission(this, PERM_CALL) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(PERM_CALL), REQ_CALL)
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:$number")))
+        } catch (e: Exception) {
+            // Fallback to dial
+            try { startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number"))) }
+            catch (e2: Exception) { Toast.makeText(this, "Call failed: ${e2.message}", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    private fun openContactPicker() {
+        if (ContextCompat.checkSelfPermission(this, PERM_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(PERM_CONTACTS), REQ_CONTACTS)
+            return
+        }
+        showContactListDialog()
+    }
+
+    private fun showContactListDialog() {
+        val contacts = mutableListOf<Pair<String, String>>() // name, number
+        try {
+            val cursor = contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
+                null, null,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+            )
+            cursor?.use {
+                val nameIdx = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numIdx  = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                while (it.moveToNext()) {
+                    val name = it.getString(nameIdx) ?: ""
+                    val num  = it.getString(numIdx)  ?: ""
+                    if (num.isNotEmpty()) contacts.add(Pair(name, num))
+                }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Contacts error: ${e.message}", Toast.LENGTH_SHORT).show(); return
+        }
+        if (contacts.isEmpty()) { Toast.makeText(this, "No contacts found", Toast.LENGTH_SHORT).show(); return }
+
+        val dialogView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+        }
+        val searchEdit = EditText(this).apply {
+            hint = "🔍 Search contacts"; textSize = 14f
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        dialogView.addView(searchEdit)
+        val listView = ListView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(350))
+            setBackgroundColor(Color.parseColor("#1E1E1E")); divider = null
+        }
+        dialogView.addView(listView)
+
+        fun makeAdapter(list: List<Pair<String,String>>) =
+            object : ArrayAdapter<Pair<String,String>>(this, android.R.layout.simple_list_item_2, android.R.id.text1, list) {
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                    val view = super.getView(position, convertView, parent)
+                    val item = getItem(position) ?: return view
+                    view.setBackgroundColor(Color.parseColor("#1E1E1E"))
+                    view.findViewById<TextView>(android.R.id.text1).apply {
+                        text = "👤 ${item.first}"; setTextColor(Color.WHITE); textSize = 14f
+                    }
+                    view.findViewById<TextView>(android.R.id.text2).apply {
+                        text = item.second; setTextColor(Color.parseColor("#AAAAAA")); textSize = 12f
+                    }
+                    return view
+                }
+            }
+
+        var currentList = contacts.toMutableList()
+        listView.adapter = makeAdapter(currentList)
+        val dialog = AlertDialog.Builder(this).setTitle("👤 Contacts").setView(dialogView)
+            .setNegativeButton("Cancel", null).create()
+        listView.setOnItemClickListener { _, _, pos, _ ->
+            val pair = currentList.getOrNull(pos) ?: return@setOnItemClickListener
+            dialInput?.setText(pair.second.replace(" ", "").replace("-", ""))
+            dialog.dismiss()
+        }
+        searchEdit.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val q = s.toString().lowercase()
+                currentList = contacts.filter { it.first.lowercase().contains(q) || it.second.contains(q) }.toMutableList()
+                listView.adapter = makeAdapter(currentList)
+            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
+        dialog.show()
+    }
+
+    private fun buildRecentCallsView(): LinearLayout {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                container.addView(TextView(this).apply {
+                    text = "Call log permission not granted.\nGrant READ_CALL_LOG in manifest & at runtime.";
+                    setTextColor(Color.parseColor("#888888")); textSize = 12f; setPadding(0, dp(4), 0, dp(4))
+                })
+                return container
+            }
+            val cursor = contentResolver.query(
+                android.provider.CallLog.Calls.CONTENT_URI,
+                arrayOf(android.provider.CallLog.Calls.NUMBER, android.provider.CallLog.Calls.CACHED_NAME,
+                    android.provider.CallLog.Calls.TYPE, android.provider.CallLog.Calls.DATE),
+                null, null,
+                android.provider.CallLog.Calls.DATE + " DESC"
+            )
+            var count = 0
+            cursor?.use {
+                val numIdx  = it.getColumnIndex(android.provider.CallLog.Calls.NUMBER)
+                val nameIdx = it.getColumnIndex(android.provider.CallLog.Calls.CACHED_NAME)
+                val typeIdx = it.getColumnIndex(android.provider.CallLog.Calls.TYPE)
+                val dateIdx = it.getColumnIndex(android.provider.CallLog.Calls.DATE)
+                while (it.moveToNext() && count < 20) {
+                    val num  = if (numIdx  >= 0) it.getString(numIdx)  else "?"
+                    val name = if (nameIdx >= 0) it.getString(nameIdx) ?: "" else ""
+                    val type = if (typeIdx >= 0) it.getInt(typeIdx) else 0
+                    val date = if (dateIdx >= 0) it.getLong(dateIdx) else 0L
+                    val typeIcon = when (type) {
+                        android.provider.CallLog.Calls.INCOMING_TYPE  -> "📲"
+                        android.provider.CallLog.Calls.OUTGOING_TYPE  -> "📞"
+                        android.provider.CallLog.Calls.MISSED_TYPE    -> "📵"
+                        else -> "📋"
+                    }
+                    val displayName = if (name.isNotEmpty()) name else num ?: "Unknown"
+                    val timeStr = if (date > 0) DateUtils.getRelativeTimeSpanString(date, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString() else ""
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                        setBackgroundColor(Color.parseColor("#1E1E1E"))
+                        setPadding(dp(10), dp(10), dp(10), dp(10))
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            setMargins(0, dp(2), 0, dp(2))
+                        }
+                    }
+                    val iconView = TextView(this).apply {
+                        text = typeIcon; textSize = 20f; gravity = Gravity.CENTER
+                        layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply { setMargins(0, 0, dp(10), 0) }
+                    }
+                    val textBlock = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    textBlock.addView(TextView(this).apply {
+                        text = displayName; setTextColor(Color.WHITE); textSize = 14f
+                    })
+                    textBlock.addView(TextView(this).apply {
+                        text = "$num  ·  $timeStr"; setTextColor(Color.parseColor("#888888")); textSize = 11f
+                    })
+                    val callBackBtn = Button(this).apply {
+                        text = "📞"; textSize = 18f; setTextColor(Color.WHITE)
+                        setBackgroundColor(Color.parseColor("#4CAF50"))
+                        layoutParams = LinearLayout.LayoutParams(dp(46), dp(46))
+                        setPadding(0, 0, 0, 0)
+                        setOnClickListener {
+                            dialInput?.setText(num)
+                            makeCall()
+                        }
+                    }
+                    row.addView(iconView); row.addView(textBlock); row.addView(callBackBtn)
+                    container.addView(row)
+                    count++
+                }
+            }
+            if (count == 0) {
+                container.addView(TextView(this).apply {
+                    text = "No recent calls"; setTextColor(Color.parseColor("#666666")); textSize = 13f
+                })
+            }
+        } catch (e: SecurityException) {
+            container.addView(TextView(this).apply {
+                text = "Call log access denied"; setTextColor(Color.parseColor("#888888")); textSize = 12f
+            })
+        } catch (e: Exception) {
+            container.addView(TextView(this).apply {
+                text = "Call log error: ${e.message}"; setTextColor(Color.parseColor("#888888")); textSize = 12f
+            })
+        }
+        return container
+    }
+
+    // =====================================================================
+    // ██████████  SMS SECTION  ██████████
+    // =====================================================================
+
+    private var smsListContainer: LinearLayout? = null
+    private var smsSearchEdit: EditText? = null
+
+    private fun createSmsView(): LinearLayout {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#121212"))
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+
+        // ── Header ──
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(16), dp(12), dp(16), dp(12)); gravity = Gravity.CENTER_VERTICAL
+        }
+        val headerTitle = TextView(this).apply {
+            text = "💬 SMS Messages"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val composeBtn = Button(this).apply {
+            text = "✏️ New"; textSize = 13f; setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#6200EE"))
+            layoutParams = LinearLayout.LayoutParams(dp(80), dp(40))
+            setOnClickListener { showComposeSmsDialog(null, "") }
+        }
+        header.addView(headerTitle); header.addView(composeBtn)
+        layout.addView(header)
+
+        // ── Search ──
+        smsSearchEdit = EditText(this).apply {
+            hint = "🔍 Search messages"; textSize = 14f
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) { refreshSmsView() }
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            })
+        }
+        layout.addView(smsSearchEdit)
+
+        // ── Scrollable list ──
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        smsListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#121212"))
+        }
+        scroll.addView(smsListContainer)
+        layout.addView(scroll)
+
+        return layout
+    }
+
+    private fun refreshSmsView() {
+        val container = smsListContainer ?: return
+        container.removeAllViews()
+
+        if (ContextCompat.checkSelfPermission(this, PERM_SMS_R) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(PERM_SMS_R, PERM_SMS_S, PERM_SMS_R2), REQ_SMS)
+            container.addView(TextView(this).apply {
+                text = "📵 SMS permission required.\nTap to grant."; setTextColor(Color.WHITE); textSize = 14f
+                setPadding(dp(20), dp(20), dp(20), dp(20)); gravity = Gravity.CENTER
+                setOnClickListener { ActivityCompat.requestPermissions(this@MainActivity, arrayOf(PERM_SMS_R, PERM_SMS_S, PERM_SMS_R2), REQ_SMS) }
+            })
+            return
+        }
+
+        val query = smsSearchEdit?.text?.toString()?.lowercase() ?: ""
+        val conversations = mutableMapOf<String, SmsConversation>()
+
+        try {
+            val uri = Uri.parse("content://sms/")
+            val cursor = contentResolver.query(uri,
+                arrayOf("_id", "address", "body", "date", "type", "read", "thread_id"),
+                null, null, "date DESC"
+            )
+            cursor?.use {
+                val addrIdx   = it.getColumnIndex("address")
+                val bodyIdx   = it.getColumnIndex("body")
+                val dateIdx   = it.getColumnIndex("date")
+                val typeIdx   = it.getColumnIndex("type")
+                val readIdx   = it.getColumnIndex("read")
+                while (it.moveToNext()) {
+                    val addr   = if (addrIdx  >= 0) it.getString(addrIdx) ?: "Unknown" else "Unknown"
+                    val body   = if (bodyIdx  >= 0) it.getString(bodyIdx) ?: "" else ""
+                    val date   = if (dateIdx  >= 0) it.getLong(dateIdx) else 0L
+                    val type   = if (typeIdx  >= 0) it.getInt(typeIdx) else 1
+                    val isRead = if (readIdx  >= 0) it.getInt(readIdx) == 1 else true
+
+                    if (query.isNotEmpty() && !addr.contains(query) && !body.lowercase().contains(query)) continue
+
+                    if (!conversations.containsKey(addr)) {
+                        conversations[addr] = SmsConversation(addr, body, date, type, if (isRead) 0 else 1)
+                    } else if (!isRead) {
+                        conversations[addr]!!.unreadCount++
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            container.addView(TextView(this).apply {
+                text = "SMS load error: ${e.message}"; setTextColor(Color.parseColor("#FF4444")); textSize = 12f
+                setPadding(dp(16), dp(16), dp(16), dp(16))
+            })
+            return
+        }
+
+        if (conversations.isEmpty()) {
+            container.addView(TextView(this).apply {
+                text = if (query.isEmpty()) "📭 No messages found" else "🔍 No results for \"$query\""
+                setTextColor(Color.parseColor("#666666")); textSize = 14f; gravity = Gravity.CENTER
+                setPadding(dp(20), dp(40), dp(20), dp(40))
+            })
+            return
+        }
+
+        for ((addr, conv) in conversations.entries.take(200)) {
+            container.addView(buildSmsRow(conv))
+        }
+    }
+
+    data class SmsConversation(val address: String, val snippet: String, val date: Long, val type: Int, var unreadCount: Int)
+
+    private fun buildSmsRow(conv: SmsConversation): View {
+        val typeIcon = if (conv.type == Telephony.TextBasedSmsColumns.MESSAGE_TYPE_SENT) "➡️" else "📩"
+        val timeStr  = if (conv.date > 0) DateUtils.getRelativeTimeSpanString(conv.date, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString() else ""
+        val displayAddr = getContactName(conv.address)
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dp(2), 0, dp(2))
+            }
+        }
+        val avatarView = TextView(this).apply {
+            text = typeIcon; textSize = 24f; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { setMargins(0, 0, dp(12), 0) }
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+        }
+        val textBlock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val nameRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }
+        val nameView = TextView(this).apply {
+            text = displayAddr
+            setTextColor(if (conv.unreadCount > 0) Color.WHITE else Color.parseColor("#CCCCCC"))
+            textSize = 14f
+            if (conv.unreadCount > 0) typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val timeView = TextView(this).apply {
+            text = timeStr; setTextColor(Color.parseColor("#888888")); textSize = 11f
+        }
+        nameRow.addView(nameView); nameRow.addView(timeView)
+        textBlock.addView(nameRow)
+        textBlock.addView(TextView(this).apply {
+            text = conv.snippet.let { if (it.length > 60) it.substring(0, 60) + "…" else it }
+            setTextColor(Color.parseColor("#AAAAAA")); textSize = 12f
+        })
+        if (conv.unreadCount > 0) {
+            val badge = TextView(this).apply {
+                text = conv.unreadCount.toString(); textSize = 11f; gravity = Gravity.CENTER
+                setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#F44336"))
+                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { setMargins(dp(8), 0, 0, 0) }
+            }
+            row.addView(avatarView); row.addView(textBlock); row.addView(badge)
+        } else {
+            row.addView(avatarView); row.addView(textBlock)
+        }
+
+        row.setOnClickListener { openSmsThread(conv.address, displayAddr) }
+        row.setOnLongClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("💬 $displayAddr")
+                .setItems(arrayOf("📞 Call", "✏️ Reply", "🗑️ Delete Thread")) { _, which ->
+                    when (which) {
+                        0 -> { dialInput?.setText(conv.address); switchToSection("dialer") }
+                        1 -> showComposeSmsDialog(conv.address, "")
+                        2 -> deleteSmsThread(conv.address)
+                    }
+                }.show()
+            true
+        }
+        return row
+    }
+
+    private fun getContactName(address: String): String {
+        if (ContextCompat.checkSelfPermission(this, PERM_CONTACTS) != PackageManager.PERMISSION_GRANTED) return address
+        return try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(address))
+            val cursor = contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)
+            cursor?.use { if (it.moveToFirst()) it.getString(0) else address } ?: address
+        } catch (e: Exception) { address }
+    }
+
+    private fun openSmsThread(address: String, displayName: String) {
+        val messages = mutableListOf<SmsMessage>()
+        try {
+            val cursor = contentResolver.query(
+                Uri.parse("content://sms/"),
+                arrayOf("_id", "body", "date", "type"),
+                "address = ?", arrayOf(address),
+                "date ASC"
+            )
+            cursor?.use {
+                val bodyIdx = it.getColumnIndex("body")
+                val dateIdx = it.getColumnIndex("date")
+                val typeIdx = it.getColumnIndex("type")
+                while (it.moveToNext()) {
+                    val body = if (bodyIdx >= 0) it.getString(bodyIdx) ?: "" else ""
+                    val date = if (dateIdx >= 0) it.getLong(dateIdx) else 0L
+                    val type = if (typeIdx >= 0) it.getInt(typeIdx) else 1
+                    messages.add(SmsMessage(body, date, type))
+                }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "SMS thread error: ${e.message}", Toast.LENGTH_SHORT).show(); return
+        }
+
+        val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#121212"))
+        }
+
+        // Thread header
+        val threadHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(12), dp(12), dp(12), dp(12)); gravity = Gravity.CENTER_VERTICAL
+        }
+        val backBtn = Button(this).apply {
+            text = "←"; textSize = 20f; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener { dialog.dismiss() }
+        }
+        val headerName = TextView(this).apply {
+            text = "💬 $displayName"; textSize = 16f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val callBtn2 = Button(this).apply {
+            text = "📞"; textSize = 18f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#4CAF50"))
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)); setPadding(0,0,0,0)
+            setOnClickListener { dialInput?.setText(address); dialog.dismiss(); switchToSection("dialer") }
+        }
+        threadHeader.addView(backBtn); threadHeader.addView(headerName); threadHeader.addView(callBtn2)
+        layout.addView(threadHeader)
+
+        // Messages scroll
+        val msgScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        val msgContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        for (msg in messages) {
+            val isSent = msg.type == Telephony.TextBasedSmsColumns.MESSAGE_TYPE_SENT
+            val bubble = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(if (isSent) Color.parseColor("#6200EE") else Color.parseColor("#2A2A2A"))
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(if (isSent) dp(60) else dp(4), dp(4), if (isSent) dp(4) else dp(60), dp(4))
+                    gravity = if (isSent) Gravity.END else Gravity.START
+                }
+                val lp2 = layoutParams as LinearLayout.LayoutParams
+                if (isSent) lp2.gravity = Gravity.END else lp2.gravity = Gravity.START
+            }
+            bubble.addView(TextView(this).apply {
+                text = msg.body; setTextColor(Color.WHITE); textSize = 14f
+            })
+            bubble.addView(TextView(this).apply {
+                text = if (msg.date > 0) SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(msg.date)) else ""
+                setTextColor(Color.parseColor("#AAAAAA")); textSize = 10f
+            })
+            val wrapRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = if (isSent) Gravity.END else Gravity.START
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+            wrapRow.addView(bubble)
+            msgContainer.addView(wrapRow)
+        }
+        if (messages.isEmpty()) {
+            msgContainer.addView(TextView(this).apply {
+                text = "No messages"; setTextColor(Color.parseColor("#666666")); textSize = 14f
+                gravity = Gravity.CENTER; setPadding(dp(20), dp(40), dp(20), dp(40))
+            })
+        }
+        msgScroll.addView(msgContainer)
+        layout.addView(msgScroll)
+        msgScroll.post { msgScroll.fullScroll(View.FOCUS_DOWN) }
+
+        // Reply bar
+        val replyBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(8), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER_VERTICAL
+        }
+        val replyEdit = EditText(this).apply {
+            hint = "Type a message…"; textSize = 14f; setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setPadding(dp(10), dp(8), dp(10), dp(8)); maxLines = 4
+        }
+        val sendBtn = Button(this).apply {
+            text = "▶"; textSize = 18f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#6200EE"))
+            layoutParams = LinearLayout.LayoutParams(dp(50), dp(50)).apply { setMargins(dp(8), 0, 0, 0) }
+            setOnClickListener {
+                val text = replyEdit.text.toString().trim()
+                if (text.isNotEmpty()) {
+                    sendSms(address, text)
+                    replyEdit.setText("")
+                    dialog.dismiss()
+                    openSmsThread(address, displayName)
+                }
+            }
+        }
+        replyBar.addView(replyEdit); replyBar.addView(sendBtn)
+        layout.addView(replyBar)
+        dialog.setContentView(layout); dialog.show()
+    }
+
+    data class SmsMessage(val body: String, val date: Long, val type: Int)
+
+    private fun showComposeSmsDialog(preFilledAddress: String?, preFilledBody: String) {
+        val dialogView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        dialogView.addView(TextView(this).apply {
+            text = "To:"; setTextColor(Color.parseColor("#AAAAAA")); textSize = 13f
+        })
+        val toEdit = EditText(this).apply {
+            hint = "Phone number"; textSize = 14f; setText(preFilledAddress ?: "")
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.parseColor("#2A2A2A")); setPadding(dp(10), dp(8), dp(10), dp(8))
+            inputType = android.text.InputType.TYPE_CLASS_PHONE
+        }
+        dialogView.addView(toEdit)
+        dialogView.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8)) })
+        dialogView.addView(TextView(this).apply {
+            text = "Message:"; setTextColor(Color.parseColor("#AAAAAA")); textSize = 13f
+        })
+        val msgEdit = EditText(this).apply {
+            hint = "Type message here…"; textSize = 14f; setText(preFilledBody)
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.parseColor("#2A2A2A")); setPadding(dp(10), dp(8), dp(10), dp(8))
+            minLines = 3; maxLines = 6; gravity = Gravity.TOP
+        }
+        dialogView.addView(msgEdit)
+
+        AlertDialog.Builder(this)
+            .setTitle("✏️ New Message")
+            .setView(dialogView)
+            .setPositiveButton("📤 Send") { _, _ ->
+                val to  = toEdit.text.toString().trim()
+                val msg = msgEdit.text.toString().trim()
+                if (to.isEmpty() || msg.isEmpty()) {
+                    Toast.makeText(this, "Number and message required", Toast.LENGTH_SHORT).show()
+                } else sendSms(to, msg)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun sendSms(address: String, body: String) {
+        if (ContextCompat.checkSelfPermission(this, PERM_SMS_S) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(PERM_SMS_S, PERM_SMS_R), REQ_SMS)
+            Toast.makeText(this, "SMS permission required", Toast.LENGTH_SHORT).show(); return
+        }
+        try {
+            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                this.getSystemService(SmsManager::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                SmsManager.getDefault()
+            }
+            val parts = smsManager.divideMessage(body)
+            if (parts.size == 1) smsManager.sendTextMessage(address, null, body, null, null)
+            else smsManager.sendMultipartTextMessage(address, null, parts, null, null)
+            Toast.makeText(this, "✅ SMS sent to $address", Toast.LENGTH_SHORT).show()
+            if (activeSection == "sms") refreshSmsView()
+        } catch (e: Exception) {
+            Toast.makeText(this, "SMS failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun deleteSmsThread(address: String) {
+        AlertDialog.Builder(this)
+            .setTitle("🗑️ Delete Thread")
+            .setMessage("Delete all messages with $address?")
+            .setPositiveButton("Delete") { _, _ ->
+                try {
+                    val deleted = contentResolver.delete(Uri.parse("content://sms/"), "address = ?", arrayOf(address))
+                    Toast.makeText(this, "Deleted $deleted message(s)", Toast.LENGTH_SHORT).show()
+                    refreshSmsView()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Delete failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    // =====================================================================
+    // FILE MANAGER
+    // =====================================================================
 
     private fun createFileManagerView(): LinearLayout {
         val layout = LinearLayout(this).apply {
@@ -848,12 +1665,10 @@ class MainActivity : AppCompatActivity() {
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            setBackgroundColor(Color.WHITE)
-            elevation = dp(2).toFloat()
+            setBackgroundColor(Color.WHITE); elevation = dp(2).toFloat()
         }
         val backBtn = Button(this).apply {
-            text = "←"; textSize = 24f; setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener { goUp() }
+            text = "←"; textSize = 24f; setBackgroundColor(Color.TRANSPARENT); setOnClickListener { goUp() }
         }
         pathText = TextView(this).apply {
             text = "/"
@@ -866,7 +1681,6 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { createNewFolder() }
         }
         topBar.addView(backBtn); topBar.addView(pathText); topBar.addView(newFolderBtn)
-
         storageInfo = TextView(this).apply {
             setPadding(dp(12), dp(4), dp(12), dp(4)); textSize = 11f
             setBackgroundColor(Color.parseColor("#E0E0E0"))
@@ -882,7 +1696,7 @@ class MainActivity : AppCompatActivity() {
     private fun isImageFile(name: String): Boolean {
         val lower = name.lowercase()
         return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
-               lower.endsWith(".gif") || lower.endsWith(".bmp")  || lower.endsWith(".webp")
+               lower.endsWith(".gif") || lower.endsWith(".bmp") || lower.endsWith(".webp")
     }
 
     private fun loadFiles(dir: File) {
@@ -893,14 +1707,10 @@ class MainActivity : AppCompatActivity() {
             currentPath = dir
             val storagePath = try { Environment.getExternalStorageDirectory().absolutePath } catch (e: Exception) { "" }
             pathText.text = dir.absolutePath.replace(storagePath, "/storage/emulated/0")
-            try {
-                storageInfo.text = "Free: ${getSize(dir.freeSpace)} | Total: ${getSize(dir.totalSpace)}"
-            } catch (e: Exception) { storageInfo.text = "" }
-
+            try { storageInfo.text = "Free: ${getSize(dir.freeSpace)} | Total: ${getSize(dir.totalSpace)}" } catch (e: Exception) { storageInfo.text = "" }
             val files = try {
                 dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
             } catch (e: Exception) { emptyList() }
-
             val adapter = object : ArrayAdapter<File>(this, android.R.layout.simple_list_item_2, android.R.id.text1, files) {
                 override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                     val view = super.getView(position, convertView, parent)
@@ -1013,7 +1823,7 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()).setPositiveButton("OK", null).show()
     }
 
-    // ==================== ZIP EXTRACTOR ====================
+    // ── ZIP ──────────────────────────────────────────────────────
 
     private fun showZipOptions(file: File) {
         AlertDialog.Builder(this).setTitle("🗜️ ${file.name}")
@@ -1023,13 +1833,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractZipToDcim(zipFile: File) {
-        val dcimDir = try {
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-        } catch (e: Exception) { File(Environment.getExternalStorageDirectory(), "DCIM") }
-        val zipBaseName = zipFile.nameWithoutExtension
-        val destRoot = File(dcimDir, zipBaseName)
-        val progressDialog = AlertDialog.Builder(this)
-            .setTitle("📦 Extracting…").setMessage("0 files extracted").setCancelable(false).create()
+        val dcimDir = try { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) }
+                      catch (e: Exception) { File(Environment.getExternalStorageDirectory(), "DCIM") }
+        val destRoot = File(dcimDir, zipFile.nameWithoutExtension)
+        val progressDialog = AlertDialog.Builder(this).setTitle("📦 Extracting…").setMessage("0 files extracted").setCancelable(false).create()
         progressDialog.show()
         Thread {
             var extracted = 0; var failed = 0
@@ -1039,53 +1846,46 @@ class MainActivity : AppCompatActivity() {
                 var entry = zis.nextEntry
                 while (entry != null) {
                     try {
-                        val entryName = entry.name.replace("..", "_")
-                        val outFile = File(destRoot, entryName)
+                        val outFile = File(destRoot, entry.name.replace("..", "_"))
                         if (entry.isDirectory) outFile.mkdirs()
                         else {
                             outFile.parentFile?.mkdirs()
-                            FileOutputStream(outFile).use { fos -> zis.copyTo(fos, bufferSize = 8192) }
+                            FileOutputStream(outFile).use { zis.copyTo(it, 8192) }
                             extracted++
-                            val count = extracted
-                            runOnUiThread { progressDialog.setMessage("$count files extracted…") }
+                            val c = extracted
+                            runOnUiThread { progressDialog.setMessage("$c files extracted…") }
                         }
                         zis.closeEntry()
-                    } catch (entryEx: Exception) { failed++; try { zis.closeEntry() } catch (_: Exception) {} }
+                    } catch (ex: Exception) { failed++; try { zis.closeEntry() } catch (_: Exception) {} }
                     entry = try { zis.nextEntry } catch (_: Exception) { null }
                 }
                 zis.close()
                 runOnUiThread {
                     progressDialog.dismiss()
-                    val msg = if (failed == 0) "✅ $extracted files extracted to\nDCIM/$zipBaseName"
-                              else "✅ $extracted extracted, ⚠️ $failed failed\nDCIM/$zipBaseName"
-                    AlertDialog.Builder(this).setTitle("Extraction Complete").setMessage(msg)
-                        .setPositiveButton("OK", null).show()
+                    val msg = if (failed == 0) "✅ $extracted files extracted to\nDCIM/${zipFile.nameWithoutExtension}"
+                              else "✅ $extracted extracted, ⚠️ $failed failed"
+                    AlertDialog.Builder(this).setTitle("Extraction Complete").setMessage(msg).setPositiveButton("OK", null).show()
                     loadFiles(currentPath)
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    progressDialog.dismiss()
-                    Toast.makeText(this, "ZIP error: ${e.message}", Toast.LENGTH_LONG).show()
-                }
+                runOnUiThread { progressDialog.dismiss(); Toast.makeText(this, "ZIP error: ${e.message}", Toast.LENGTH_LONG).show() }
             }
         }.start()
     }
 
-    // ==================== VIDEO PLAYER (with PiP) ====================
+    // ── Video Player ─────────────────────────────────────────────
 
     private fun playVideo(file: File) {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                dialog.window?.attributes?.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                dialog.window?.attributes?.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
             dialog.window?.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
-            dialog.window?.decorView?.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            @Suppress("DEPRECATION")
+            dialog.window?.decorView?.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            )
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
             val rootFrame = FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -1098,49 +1898,33 @@ class MainActivity : AppCompatActivity() {
                     mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
                     start()
                 }
-                setOnErrorListener { _, _, _ ->
-                    Toast.makeText(this@MainActivity, "Cannot play this video", Toast.LENGTH_SHORT).show(); true
-                }
+                setOnErrorListener { _, _, _ -> Toast.makeText(this@MainActivity, "Cannot play this video", Toast.LENGTH_SHORT).show(); true }
             }
             rootFrame.addView(videoView)
             pipVideoDialog = dialog
-
             val controlOverlay = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.parseColor("#CC000000"))
+                orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#CC000000"))
                 setPadding(dp(8), dp(8), dp(8), dp(16))
                 layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
                 visibility = View.GONE
             }
             pipControlOverlay = controlOverlay
-
             val topControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             val playPauseBtn = Button(this).apply {
                 text = "⏸"; textSize = 20f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (videoView.isPlaying) { videoView.pause(); text = "▶" }
-                    else { videoView.start(); text = "⏸" }
-                }
+                setOnClickListener { if (videoView.isPlaying) { videoView.pause(); text = "▶" } else { videoView.start(); text = "⏸" } }
             }
             pipPlayPauseBtn = playPauseBtn
-            val seekBar = SeekBar(this).apply {
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            val timeText = TextView(this).apply {
-                text = "00:00 / 00:00"; setTextColor(Color.WHITE); textSize = 12f; setPadding(dp(8), 0, dp(8), 0)
-            }
+            val seekBar = SeekBar(this).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
+            val timeText = TextView(this).apply { text = "00:00 / 00:00"; setTextColor(Color.WHITE); textSize = 12f; setPadding(dp(8), 0, dp(8), 0) }
             topControls.addView(playPauseBtn); topControls.addView(seekBar); topControls.addView(timeText)
-
             val orientationControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(4))
             }
             fun makeCtrlBtn(label: String, color: String = "#333333", w: Int = 70, action: () -> Unit) =
                 Button(this).apply {
-                    text = label; textSize = 12f
-                    setBackgroundColor(Color.parseColor(color)); setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(dp(w), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                        setMargins(dp(4), 0, dp(4), 0)
-                    }
+                    text = label; textSize = 12f; setBackgroundColor(Color.parseColor(color)); setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(dp(w), ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(4), 0, dp(4), 0) }
                     setOnClickListener { action() }
                 }
             orientationControls.addView(makeCtrlBtn("📱") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT })
@@ -1158,7 +1942,6 @@ class MainActivity : AppCompatActivity() {
             })
             controlOverlay.addView(topControls); controlOverlay.addView(orientationControls)
             rootFrame.addView(controlOverlay)
-
             val hideHandler = Handler(Looper.getMainLooper())
             pipHideHandler = hideHandler
             val hideRunnable = Runnable { controlOverlay.visibility = View.GONE }
@@ -1170,9 +1953,8 @@ class MainActivity : AppCompatActivity() {
             }
             rootFrame.setOnClickListener {
                 if (isInPipMode) return@setOnClickListener
-                if (controlOverlay.visibility == View.VISIBLE) {
-                    hideHandler.removeCallbacks(hideRunnable); controlOverlay.visibility = View.GONE
-                } else showControlsTemporarily()
+                if (controlOverlay.visibility == View.VISIBLE) { hideHandler.removeCallbacks(hideRunnable); controlOverlay.visibility = View.GONE }
+                else showControlsTemporarily()
             }
             seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) { if (fromUser) videoView.seekTo(progress) }
@@ -1185,8 +1967,8 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
                         try {
                             if (videoView.isPlaying) {
-                                val current = videoView.currentPosition; val duration = videoView.duration
-                                if (duration > 0) { seekBar.max = duration; seekBar.progress = current; timeText.text = "${formatTime(current)} / ${formatTime(duration)}" }
+                                val cur = videoView.currentPosition; val dur = videoView.duration
+                                if (dur > 0) { seekBar.max = dur; seekBar.progress = cur; timeText.text = "${formatTime(cur)} / ${formatTime(dur)}" }
                             }
                         } catch (e: Exception) { }
                     }
@@ -1207,12 +1989,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun formatTime(millis: Int): String {
         if (millis < 0) return "00:00"
-        val seconds = millis / 1000; val minutes = seconds / 60; val hours = minutes / 60
-        return if (hours > 0) String.format("%02d:%02d:%02d", hours, minutes % 60, seconds % 60)
-               else String.format("%02d:%02d", minutes, seconds % 60)
+        val s = millis / 1000; val m = s / 60; val h = m / 60
+        return if (h > 0) String.format("%02d:%02d:%02d", h, m % 60, s % 60) else String.format("%02d:%02d", m, s % 60)
     }
 
-    // ==================== TEXT VIEWER ====================
+    // ── Text Viewer ──────────────────────────────────────────────
 
     private fun openTextFile(file: File) {
         try {
@@ -1228,9 +2009,9 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             }
-            val closeTextButton = Button(this).apply {
+            val closeBtn = Button(this).apply {
                 text = "X"; textSize = 16f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F"))
-                layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)); setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)); setPadding(0,0,0,0)
                 setOnClickListener { dialog.dismiss() }
             }
             val searchBar = LinearLayout(this).apply {
@@ -1238,14 +2019,14 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(4), dp(8), dp(4)); gravity = Gravity.CENTER_VERTICAL
             }
             val searchInput = EditText(this).apply {
-                hint = "🔍 Search in file..."
+                hint = "🔍 Search in file…"
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setSingleLine(true); textSize = 13f
             }
             val resultCount = TextView(this).apply {
                 text = ""; setTextColor(Color.parseColor("#666666")); textSize = 12f; setPadding(dp(8), 0, dp(8), 0)
             }
-            topBar.addView(titleView); topBar.addView(closeTextButton)
+            topBar.addView(titleView); topBar.addView(closeBtn)
             searchBar.addView(searchInput); searchBar.addView(resultCount)
             val infoBar = TextView(this).apply {
                 val lines = fileContent.lines().size; val words = fileContent.trim().split(Regex("\\s+")).size
@@ -1263,50 +2044,45 @@ class MainActivity : AppCompatActivity() {
             scrollView.addView(textView)
             searchInput.addTextChangedListener(object : android.text.TextWatcher {
                 override fun afterTextChanged(s: android.text.Editable?) {
-                    val query = s.toString().trim()
-                    if (query.isEmpty()) { textView.text = fileContent; resultCount.text = ""; return }
-                    val spannable = android.text.SpannableString(fileContent)
-                    var count = 0; var idx = fileContent.indexOf(query, ignoreCase = true)
+                    val q = s.toString().trim()
+                    if (q.isEmpty()) { textView.text = fileContent; resultCount.text = ""; return }
+                    val span = android.text.SpannableString(fileContent)
+                    var cnt = 0; var idx = fileContent.indexOf(q, ignoreCase = true)
                     while (idx != -1) {
-                        spannable.setSpan(android.text.style.BackgroundColorSpan(Color.parseColor("#FFEB3B")),
-                            idx, idx + query.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                        count++; idx = fileContent.indexOf(query, idx + 1, ignoreCase = true)
+                        span.setSpan(android.text.style.BackgroundColorSpan(Color.parseColor("#FFEB3B")),
+                            idx, idx + q.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        cnt++; idx = fileContent.indexOf(q, idx + 1, ignoreCase = true)
                     }
-                    textView.text = spannable
-                    resultCount.text = if (count > 0) "$count found" else "Not found"
+                    textView.text = span; resultCount.text = if (cnt > 0) "$cnt found" else "Not found"
                 }
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             })
             layout.addView(topBar); layout.addView(searchBar); layout.addView(infoBar); layout.addView(scrollView)
             dialog.setContentView(layout); dialog.show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
-    // ==================== IMAGE VIEWER ====================
+    // ── Image Viewer ──────────────────────────────────────────────
 
     private fun openImageFile(file: File) {
         try {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                dialog.window?.attributes?.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                dialog.window?.attributes?.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
             val rootFrame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
             val bitmap = loadBitmapSafe(file)
             if (bitmap == null) { Toast.makeText(this, "Cannot open image", Toast.LENGTH_SHORT).show(); return }
-
             val zoomMatrix = Matrix(); var zoomScale = 1f
             val imageView = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER; setImageBitmap(bitmap)
                 layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER)
             }
             val scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                override fun onScale(detector: ScaleGestureDetector): Boolean {
-                    zoomScale = (zoomScale * detector.scaleFactor).coerceIn(0.5f, 8f)
-                    zoomMatrix.setScale(zoomScale, zoomScale, detector.focusX, detector.focusY)
+                override fun onScale(d: ScaleGestureDetector): Boolean {
+                    zoomScale = (zoomScale * d.scaleFactor).coerceIn(0.5f, 8f)
+                    zoomMatrix.setScale(zoomScale, zoomScale, d.focusX, d.focusY)
                     imageView.imageMatrix = zoomMatrix; return true
                 }
             })
@@ -1315,7 +2091,6 @@ class MainActivity : AppCompatActivity() {
                 if (event.action == MotionEvent.ACTION_UP && !scaleDetector.isInProgress) v.performClick(); true
             }
             rootFrame.addView(imageView)
-
             val topOverlay = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#CC000000"))
                 setPadding(dp(12), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER_VERTICAL
@@ -1327,31 +2102,29 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             }
-            val closeImageButton = Button(this).apply {
+            val closeBtn = Button(this).apply {
                 text = "✕"; textSize = 16f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#D32F2F"))
-                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)); setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)); setPadding(0,0,0,0)
                 setOnClickListener { dialog.dismiss() }
             }
-            topOverlay.addView(infoText); topOverlay.addView(closeImageButton); rootFrame.addView(topOverlay)
-            val hintText = TextView(this).apply {
+            topOverlay.addView(infoText); topOverlay.addView(closeBtn); rootFrame.addView(topOverlay)
+            rootFrame.addView(TextView(this).apply {
                 text = "Pinch to zoom"; setTextColor(Color.parseColor("#AAFFFFFF")); textSize = 11f; gravity = Gravity.CENTER
                 setBackgroundColor(Color.parseColor("#88000000")); setPadding(dp(16), dp(6), dp(16), dp(6))
                 layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { setMargins(0, 0, 0, dp(24)) }
-            }
-            rootFrame.addView(hintText); dialog.setContentView(rootFrame); dialog.show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Image error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { setMargins(0,0,0,dp(24)) }
+            })
+            dialog.setContentView(rootFrame); dialog.show()
+        } catch (e: Exception) { Toast.makeText(this, "Image error: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
     private fun loadBitmapSafe(file: File): Bitmap? {
         return try {
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(file.absolutePath, options)
-            val maxDim = 2048; var sampleSize = 1
-            while ((options.outWidth / sampleSize) > maxDim || (options.outHeight / sampleSize) > maxDim) sampleSize *= 2
-            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sampleSize })
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, opts)
+            val max = 2048; var sample = 1
+            while ((opts.outWidth / sample) > max || (opts.outHeight / sample) > max) sample *= 2
+            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
         } catch (e: Exception) { null }
     }
 
@@ -1367,38 +2140,35 @@ class MainActivity : AppCompatActivity() {
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
             val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val topBar = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.BLACK)
-                setPadding(dp(8), dp(8), dp(8), dp(8))
+                orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.BLACK); setPadding(dp(8), dp(8), dp(8), dp(8))
             }
             val titleText = TextView(this).apply {
                 text = "${file.name} - 1/$pageCount"; setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
-            val closePdfButton = Button(this).apply {
+            val closeBtn = Button(this).apply {
                 text = "✕"; textSize = 20f
                 setOnClickListener { try { renderer.close() } catch (e: Exception) { }; dialog.dismiss() }
             }
-            topBar.addView(titleText); topBar.addView(closePdfButton)
+            topBar.addView(titleText); topBar.addView(closeBtn)
             val imageView = ImageView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
                 scaleType = ImageView.ScaleType.FIT_CENTER
             }
             var currentPage = 0
-            fun renderPage(pageNum: Int) {
+            fun renderPage(n: Int) {
                 try {
-                    val page = renderer.openPage(pageNum)
+                    val page = renderer.openPage(n)
                     val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
                     page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    imageView.setImageBitmap(bmp); titleText.text = "${file.name} - ${pageNum + 1}/$pageCount"
+                    imageView.setImageBitmap(bmp); titleText.text = "${file.name} - ${n + 1}/$pageCount"
                     page.close()
                 } catch (e: Exception) { Toast.makeText(this, "PDF render error", Toast.LENGTH_SHORT).show() }
             }
             renderPage(0)
             imageView.setOnClickListener { currentPage = (currentPage + 1) % pageCount; renderPage(currentPage) }
             layout.addView(topBar); layout.addView(imageView); dialog.setContentView(layout); dialog.show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "PDF Error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "PDF Error: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
     private fun pdfToJpg(file: File) {
@@ -1418,24 +2188,22 @@ class MainActivity : AppCompatActivity() {
                     page.close()
                 }
                 renderer.close()
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Saved to ${outputDir.name}", Toast.LENGTH_SHORT).show()
-                    loadFiles(currentPath)
-                }
+                runOnUiThread { Toast.makeText(this@MainActivity, "Saved to ${outputDir.name}", Toast.LENGTH_SHORT).show(); loadFiles(currentPath) }
             } catch (e: Exception) {
                 runOnUiThread { Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
             }
         }.start()
     }
 
-    // ==================== BROWSER ====================
+    // =====================================================================
+    // BROWSER
+    // =====================================================================
 
     private fun createBrowserView(): LinearLayout {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#2A2A2A"))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
@@ -1454,51 +2222,37 @@ class MainActivity : AppCompatActivity() {
 
         val urlLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
         val urlBarLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
-
         urlBar = EditText(this).apply {
             hint = "Enter URL or search"
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setSingleLine(true)
-            setOnEditorActionListener { _, _, _ -> loadUrlInCurrentTab(); true }
+            setSingleLine(true); setOnEditorActionListener { _, _, _ -> loadUrlInCurrentTab(); true }
         }
         val goBtn = Button(this).apply { text = "Go"; setOnClickListener { loadUrlInCurrentTab() } }
-
-        // FIX: Desktop mode button now only affects current tab
         val desktopBtn = Button(this).apply {
             text = "💻"; textSize = 16f
             setOnClickListener {
                 val tab = webTabs.getOrNull(currentTabIndex) ?: return@setOnClickListener
                 tab.isDesktopMode = !tab.isDesktopMode
                 text = if (tab.isDesktopMode) "📱" else "💻"
-                Toast.makeText(this@MainActivity,
-                    if (tab.isDesktopMode) "Desktop Mode ON (this tab)" else "Desktop Mode OFF (this tab)",
-                    Toast.LENGTH_SHORT).show()
-                updateDesktopModeForTab(tab)
-                tab.webView.reload()
+                Toast.makeText(this@MainActivity, if (tab.isDesktopMode) "Desktop Mode ON" else "Desktop Mode OFF", Toast.LENGTH_SHORT).show()
+                updateDesktopModeForTab(tab); tab.webView.reload()
             }
         }
-
         val browserPipBtn = Button(this).apply {
             text = "⧉"; textSize = 16f
             isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
             alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 1f else 0.4f
             setOnClickListener { triggerBrowserVideoPip() }
         }
-
-        urlBarLayout.addView(urlBar); urlBarLayout.addView(goBtn)
-        urlBarLayout.addView(desktopBtn); urlBarLayout.addView(browserPipBtn)
-
+        urlBarLayout.addView(urlBar); urlBarLayout.addView(goBtn); urlBarLayout.addView(desktopBtn); urlBarLayout.addView(browserPipBtn)
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
             max = 100; visibility = View.GONE
         }
         urlLayout.addView(urlBarLayout); urlLayout.addView(progressBar)
-
-        // FIX: Use FrameLayout with visibility switching instead of remove/addView
         webContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-
         layout.addView(tabBar); layout.addView(urlLayout); layout.addView(webContainer)
         return layout
     }
@@ -1534,12 +2288,11 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
-    // FIX: Per-tab desktop mode
     private fun updateDesktopModeForTab(tab: WebTab) {
-        val userAgent = if (tab.isDesktopMode)
+        val ua = if (tab.isDesktopMode)
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         else WebSettings.getDefaultUserAgent(this)
-        try { tab.webView.settings.userAgentString = userAgent } catch (e: Exception) { }
+        try { tab.webView.settings.userAgentString = ua } catch (e: Exception) { }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -1547,7 +2300,6 @@ class MainActivity : AppCompatActivity() {
         try {
             val webView = WebView(applicationContext).apply {
                 layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                // FIX: Start hidden, will be shown when switched to
                 visibility = View.GONE
             }
             webView.settings.apply {
@@ -1559,7 +2311,6 @@ class MainActivity : AppCompatActivity() {
                 allowFileAccess = true; allowContentAccess = true
                 @Suppress("DEPRECATION") setSavePassword(true)
                 @Suppress("DEPRECATION") setSaveFormData(true)
-                // FIX: Enable JS dialogs support (needed for alert/confirm/prompt)
                 javaScriptCanOpenWindowsAutomatically = true
                 setSupportMultipleWindows(false)
             }
@@ -1568,37 +2319,31 @@ class MainActivity : AppCompatActivity() {
 
             val tab = WebTab(webView, title = "Loading…", url = url, isDesktopMode = false)
             webTabs.add(tab)
-            updateDesktopModeForTab(tab) // Apply default (mobile) UA
+            updateDesktopModeForTab(tab)
 
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     val reqUrl = request.url.toString()
                     val scheme = request.url.scheme?.lowercase() ?: ""
-                    if (scheme == "http" || scheme == "https" || scheme == "about") {
-                        view.loadUrl(reqUrl); return true
-                    }
+                    if (scheme == "http" || scheme == "https" || scheme == "about") { view.loadUrl(reqUrl); return true }
                     if (scheme == "data") return false
                     return handleCustomScheme(view, reqUrl)
                 }
-
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     val idx = webTabs.indexOfFirst { it.webView == view }
                     if (idx == currentTabIndex) { progressBar.visibility = View.VISIBLE; urlBar.setText(url) }
                     if (idx != -1) webTabs[idx].url = url ?: ""
                 }
-
                 override fun onPageFinished(view: WebView?, url: String?) {
                     val idx = webTabs.indexOfFirst { it.webView == view }
                     if (idx == currentTabIndex) { progressBar.visibility = View.GONE; urlBar.setText(url) }
                     if (idx != -1) webTabs[idx].url = url ?: ""
-                    // FIX: Inject long-click image save JS after page loads
                     view?.let { injectImageLongClickSave(it) }
                 }
-
                 override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                     if (request?.isForMainFrame == true) {
-                        val errorCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) error?.errorCode ?: -1 else -1
-                        if (errorCode == -10) return
+                        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) error?.errorCode ?: -1 else -1
+                        if (code == -10) return
                     }
                 }
             }
@@ -1610,55 +2355,34 @@ class MainActivity : AppCompatActivity() {
                         progressBar.visibility = if (newProgress < 100) View.VISIBLE else View.GONE
                     }
                 }
-
                 override fun onReceivedTitle(view: WebView?, title: String?) {
-                    val index = webTabs.indexOfFirst { it.webView == view }
-                    if (index != -1 && !title.isNullOrEmpty()) { webTabs[index].title = title; updateTabTitles() }
+                    val i = webTabs.indexOfFirst { it.webView == view }
+                    if (i != -1 && !title.isNullOrEmpty()) { webTabs[i].title = title; updateTabTitles() }
                 }
-
-                // FIX: JS Alert dialog
                 override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                     runOnUiThread {
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Alert")
-                            .setMessage(message)
-                            .setPositiveButton("OK") { _, _ -> result?.confirm() }
-                            .setCancelable(false)
-                            .show()
+                        AlertDialog.Builder(this@MainActivity).setTitle("Alert").setMessage(message)
+                            .setPositiveButton("OK") { _, _ -> result?.confirm() }.setCancelable(false).show()
                     }
                     return true
                 }
-
-                // FIX: JS Confirm dialog
                 override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                     runOnUiThread {
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Confirm")
-                            .setMessage(message)
-                            .setPositiveButton("OK")     { _, _ -> result?.confirm() }
-                            .setNegativeButton("Cancel") { _, _ -> result?.cancel()  }
-                            .setCancelable(false)
-                            .show()
+                        AlertDialog.Builder(this@MainActivity).setTitle("Confirm").setMessage(message)
+                            .setPositiveButton("OK") { _, _ -> result?.confirm() }
+                            .setNegativeButton("Cancel") { _, _ -> result?.cancel() }.setCancelable(false).show()
                     }
                     return true
                 }
-
-                // FIX: JS Prompt dialog
                 override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: JsPromptResult?): Boolean {
                     runOnUiThread {
                         val input = EditText(this@MainActivity).apply { setText(defaultValue) }
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Input")
-                            .setMessage(message)
-                            .setView(input)
-                            .setPositiveButton("OK")     { _, _ -> result?.confirm(input.text.toString()) }
-                            .setNegativeButton("Cancel") { _, _ -> result?.cancel() }
-                            .setCancelable(false)
-                            .show()
+                        AlertDialog.Builder(this@MainActivity).setTitle("Input").setMessage(message).setView(input)
+                            .setPositiveButton("OK") { _, _ -> result?.confirm(input.text.toString()) }
+                            .setNegativeButton("Cancel") { _, _ -> result?.cancel() }.setCancelable(false).show()
                     }
                     return true
                 }
-
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                     if (customView != null) { callback?.onCustomViewHidden(); return }
                     customView = view; customViewCallback = callback
@@ -1667,11 +2391,9 @@ class MainActivity : AppCompatActivity() {
                     decorView.addView(customView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                     @Suppress("DEPRECATION")
-                    window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or
-                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+                    window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
                     tabLayout.visibility = View.GONE
                 }
-
                 override fun onHideCustomView() {
                     if (customView == null) return
                     (window.decorView as FrameLayout).removeView(customView); customView = null
@@ -1681,36 +2403,23 @@ class MainActivity : AppCompatActivity() {
                     tabLayout.visibility = View.VISIBLE
                     customViewCallback?.onCustomViewHidden(); customViewCallback = null
                 }
-
-                override fun onShowFileChooser(
-                    webView: WebView?,
-                    filePathCallback: ValueCallback<Array<Uri>>?,
-                    fileChooserParams: FileChooserParams?
-                ): Boolean {
+                override fun onShowFileChooser(webView: WebView?, filePathCallback: ValueCallback<Array<Uri>>?, fileChooserParams: FileChooserParams?): Boolean {
                     fileUploadCallback?.onReceiveValue(null); fileUploadCallback = filePathCallback
-                    fileChooserLauncher.launch(
-                        Intent(Intent.ACTION_GET_CONTENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }
-                    )
+                    fileChooserLauncher.launch(Intent(Intent.ACTION_GET_CONTENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" })
                     return true
                 }
             }
 
-            webView.setDownloadListener { downloadUrl, userAgent, contentDisposition, mimetype, contentLength ->
-                handleDownload(downloadUrl, userAgent, contentDisposition, mimetype, contentLength, webView)
+            webView.setDownloadListener { dlUrl, ua, cd, mime, len ->
+                handleDownload(dlUrl, ua, cd, mime, len, webView)
             }
-
-            // FIX: Add webview to container (hidden) so it renders in background
             webContainer.addView(webView)
-
             val tabIndex = webTabs.size - 1
             val tabButton = Button(this).apply {
                 text = "Tab ${tabIndex + 1}"; textSize = 11f; setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#444444"))
-                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.MATCH_PARENT).apply {
-                    setMargins(dp(2), dp(2), dp(2), dp(2))
-                }
-                setPadding(dp(4), 0, dp(4), 0); setSingleLine(true)
-                ellipsize = android.text.TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
+                setPadding(dp(4), 0, dp(4), 0); setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
                 setOnClickListener { switchTab(webTabs.indexOf(tab)) }
                 setOnLongClickListener { closeTab(webTabs.indexOf(tab)); true }
             }
@@ -1722,44 +2431,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * FIX: Tab switching — use visibility instead of remove/addView.
-     * This keeps all WebViews in the hierarchy (preventing blank screens)
-     * while only showing the active one.
-     */
     private fun switchTab(index: Int) {
         if (index < 0 || index >= webTabs.size) return
-
-        // Hide all webviews, pause non-current ones
         webTabs.forEachIndexed { i, tab ->
-            if (i == index) {
-                tab.webView.visibility = View.VISIBLE
-                try { tab.webView.onResume() } catch (e: Exception) { }
-            } else {
-                tab.webView.visibility = View.GONE
-                try { tab.webView.onPause() } catch (e: Exception) { }
-            }
+            if (i == index) { tab.webView.visibility = View.VISIBLE; try { tab.webView.onResume() } catch (e: Exception) { } }
+            else            { tab.webView.visibility = View.GONE;    try { tab.webView.onPause()  } catch (e: Exception) { } }
         }
-
         currentTabIndex = index
         urlBar.setText(try { webTabs[index].webView.url ?: "" } catch (e: Exception) { "" })
         progressBar.visibility = View.GONE
         updateTabTitles()
-
-        // FIX: Update desktop mode button icon to reflect current tab's state
         updateDesktopBtnIcon()
     }
 
     private fun updateDesktopBtnIcon() {
-        // Find the desktop mode button in the URL bar layout and update its icon
         val tab = webTabs.getOrNull(currentTabIndex) ?: return
         try {
             val urlBarLayout = (browserView.getChildAt(1) as? LinearLayout)?.getChildAt(0) as? LinearLayout ?: return
             for (i in 0 until urlBarLayout.childCount) {
                 val child = urlBarLayout.getChildAt(i)
                 if (child is Button && (child.text == "💻" || child.text == "📱")) {
-                    child.text = if (tab.isDesktopMode) "📱" else "💻"
-                    break
+                    child.text = if (tab.isDesktopMode) "📱" else "💻"; break
                 }
             }
         } catch (e: Exception) { }
@@ -1770,7 +2462,7 @@ class MainActivity : AppCompatActivity() {
         if (webTabs.size <= 1) { Toast.makeText(this, "Cannot close last tab", Toast.LENGTH_SHORT).show(); return false }
         try {
             webTabs[index].webView.stopLoading()
-            webContainer.removeView(webTabs[index].webView)  // remove from container
+            webContainer.removeView(webTabs[index].webView)
             webTabs[index].webView.destroy()
         } catch (e: Exception) { }
         webTabs.removeAt(index)
@@ -1802,47 +2494,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // FIX: Image long-click save via JavaScript injection
     private fun injectImageLongClickSave(webView: WebView) {
         val js = """
             (function() {
                 if (window._imgSaveInjected) return;
                 window._imgSaveInjected = true;
                 document.addEventListener('contextmenu', function(e) {
-                    var target = e.target;
-                    if (target && target.tagName === 'IMG') {
-                        var src = target.src || target.currentSrc || '';
-                        if (src && src.length > 0) {
-                            e.preventDefault();
-                            AndroidImageSave.onImageLongClick(src, target.alt || '');
-                        }
+                    var t = e.target;
+                    if (t && t.tagName === 'IMG') {
+                        var src = t.src || t.currentSrc || '';
+                        if (src) { e.preventDefault(); AndroidImageSave.onImageLongClick(src, t.alt || ''); }
                     }
                 }, true);
                 document.addEventListener('touchstart', function(e) {
                     if (e.touches.length !== 1) return;
-                    var target = e.target;
-                    if (!target || target.tagName !== 'IMG') return;
-                    var src = target.src || target.currentSrc || '';
+                    var t = e.target;
+                    if (!t || t.tagName !== 'IMG') return;
+                    var src = t.src || t.currentSrc || '';
                     if (!src) return;
-                    var timer = setTimeout(function() {
-                        AndroidImageSave.onImageLongClick(src, target.alt || '');
-                    }, 600);
-                    document.addEventListener('touchend', function cancel() {
-                        clearTimeout(timer);
-                        document.removeEventListener('touchend', cancel);
-                    });
-                    document.addEventListener('touchmove', function cancel2() {
-                        clearTimeout(timer);
-                        document.removeEventListener('touchmove', cancel2);
-                    });
+                    var timer = setTimeout(function() { AndroidImageSave.onImageLongClick(src, t.alt || ''); }, 600);
+                    document.addEventListener('touchend', function cancel() { clearTimeout(timer); document.removeEventListener('touchend', cancel); });
+                    document.addEventListener('touchmove', function cancel2() { clearTimeout(timer); document.removeEventListener('touchmove', cancel2); });
                 }, true);
             })();
         """.trimIndent()
-
         try { webView.removeJavascriptInterface("AndroidImageSave") } catch (e: Exception) { }
         webView.addJavascriptInterface(object {
-            @JavascriptInterface
-            fun onImageLongClick(imageUrl: String, alt: String) {
+            @JavascriptInterface fun onImageLongClick(imageUrl: String, alt: String) {
                 runOnUiThread { showImageSaveDialog(imageUrl, webView) }
             }
         }, "AndroidImageSave")
@@ -1851,21 +2529,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun showImageSaveDialog(imageUrl: String, webView: WebView) {
         val options = arrayOf("💾 ছবি সেভ করুন", "🔗 লিংক কপি করুন", "🌐 নতুন ট্যাবে খুলুন")
-        AlertDialog.Builder(this)
-            .setTitle("ছবির অপশন")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> downloadImage(imageUrl, webView)
-                    1 -> {
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Image URL", imageUrl))
-                        Toast.makeText(this, "লিংক কপি হয়েছে", Toast.LENGTH_SHORT).show()
-                    }
-                    2 -> addNewTab(imageUrl, switch = true)
+        AlertDialog.Builder(this).setTitle("ছবির অপশন").setItems(options) { _, which ->
+            when (which) {
+                0 -> downloadImage(imageUrl, webView)
+                1 -> {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("Image URL", imageUrl))
+                    Toast.makeText(this, "লিংক কপি হয়েছে", Toast.LENGTH_SHORT).show()
                 }
+                2 -> addNewTab(imageUrl, switch = true)
             }
-            .setNegativeButton("বাতিল", null)
-            .show()
+        }.setNegativeButton("বাতিল", null).show()
     }
 
     private fun downloadImage(imageUrl: String, webView: WebView) {
@@ -1875,47 +2549,30 @@ class MainActivity : AppCompatActivity() {
             else -> {
                 val cookies = CookieManager.getInstance().getCookie(imageUrl) ?: ""
                 val ua = try { webView.settings.userAgentString } catch (e: Exception) { "" }
-                val ext = imageUrl.substringAfterLast(".").substringBefore("?").lowercase()
-                    .takeIf { it.length in 2..5 } ?: "jpg"
-                val fileName = "image_${System.currentTimeMillis()}.$ext"
-                downloadManually(imageUrl, cookies, ua, "", "image/*", fileName)
+                val ext = imageUrl.substringAfterLast(".").substringBefore("?").lowercase().takeIf { it.length in 2..5 } ?: "jpg"
+                downloadManually(imageUrl, cookies, ua, "", "image/*", "image_${System.currentTimeMillis()}.$ext")
             }
         }
     }
 
-    // ==================== COMMON ====================
-
-    private fun switchToFileManager() {
-        if (customView != null) return
-        isFileManagerActive = true
-        fileManagerView.visibility = View.VISIBLE
-        browserView.visibility = View.GONE
-    }
-
-    private fun switchToBrowser() {
-        isFileManagerActive = false
-        fileManagerView.visibility = View.GONE
-        browserView.visibility = View.VISIBLE
-        if (currentTabIndex in webTabs.indices) {
-            try { webTabs[currentTabIndex].webView.onResume() } catch (e: Exception) { }
-        }
-    }
+    // =====================================================================
+    // COMMON HELPERS
+    // =====================================================================
 
     private fun getSize(size: Long): String {
         if (size <= 0) return "0 B"
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
-        val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
-        return DecimalFormat("#,##0.#").format(size / Math.pow(1024.0, digitGroups.toDouble())) + " " + units[digitGroups]
+        val dg = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
+        return DecimalFormat("#,##0.#").format(size / Math.pow(1024.0, dg.toDouble())) + " " + units[dg]
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    // ==================== DOWNLOAD SYSTEM ====================
+    // =====================================================================
+    // DOWNLOAD SYSTEM
+    // =====================================================================
 
-    private fun handleDownload(
-        url: String, userAgent: String, contentDisposition: String,
-        mimetype: String, contentLength: Long, webView: WebView
-    ) {
+    private fun handleDownload(url: String, userAgent: String, contentDisposition: String, mimetype: String, contentLength: Long, webView: WebView) {
         when {
             url.startsWith("blob:")  -> downloadBlobUrl(url, webView)
             url.startsWith("data:")  -> downloadDataUrl(url)
@@ -1923,35 +2580,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun downloadWithManager(
-        url: String, userAgentStr: String, contentDisposition: String,
-        mimetype: String, contentLength: Long, webView: WebView
-    ) {
+    private fun downloadWithManager(url: String, userAgentStr: String, contentDisposition: String, mimetype: String, contentLength: Long, webView: WebView) {
         try {
             val rawName = URLUtil.guessFileName(url, contentDisposition, mimetype)
             val defaultFileName = sanitizeFileName(rawName)
             val cookies = CookieManager.getInstance().getCookie(url) ?: ""
-            val ua = if (userAgentStr.isBlank()) {
-                try { webView.settings.userAgentString } catch (e: Exception) { userAgentStr }
-            } else userAgentStr
+            val ua = if (userAgentStr.isBlank()) try { webView.settings.userAgentString } catch (e: Exception) { userAgentStr } else userAgentStr
 
-            val dialogView = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(8))
-            }
+            val dialogView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(8)) }
             val sizeText = if (contentLength > 0) getSize(contentLength) else "Unknown size"
             dialogView.addView(TextView(this).apply {
-                text = "📦 Size: $sizeText"; textSize = 13f
-                setTextColor(Color.parseColor("#555555")); setPadding(0, 0, 0, dp(12))
+                text = "📦 Size: $sizeText"; textSize = 13f; setTextColor(Color.parseColor("#555555")); setPadding(0, 0, 0, dp(12))
             })
             dialogView.addView(TextView(this).apply {
-                text = "File name (editable):"; textSize = 13f
-                setTextColor(Color.parseColor("#333333")); typeface = Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, dp(4))
+                text = "File name (editable):"; textSize = 13f; setTextColor(Color.parseColor("#333333"))
+                typeface = Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, dp(4))
             })
             val fileNameInput = EditText(this).apply {
                 setText(defaultFileName); textSize = 14f; setSingleLine(true); post { selectAll() }
             }
             dialogView.addView(fileNameInput)
-
             AlertDialog.Builder(this).setTitle("⬇️ Download File").setView(dialogView)
                 .setPositiveButton("Download") { _, _ ->
                     val inputName = fileNameInput.text.toString().trim()
@@ -1959,7 +2607,7 @@ class MainActivity : AppCompatActivity() {
                     try {
                         val parsedUri = Uri.parse(url)
                         val request = DownloadManager.Request(parsedUri).apply {
-                            setTitle(fileName); setDescription("Downloading...")
+                            setTitle(fileName); setDescription("Downloading…")
                             setMimeType(mimetype.ifBlank { "application/octet-stream" })
                             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                             if (cookies.isNotEmpty()) addRequestHeader("Cookie", cookies)
@@ -1982,9 +2630,7 @@ class MainActivity : AppCompatActivity() {
                         downloadManually(url, cookies, ua, contentDisposition, mimetype, fileName)
                     }
                 }.setNegativeButton("Cancel", null).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Download error: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "Download error: ${e.message}", Toast.LENGTH_SHORT).show() }
     }
 
     private fun downloadBlobUrl(blobUrl: String, webView: WebView) {
@@ -1998,10 +2644,7 @@ class MainActivity : AppCompatActivity() {
                         var blob = this.response;
                         var reader = new FileReader();
                         reader.readAsDataURL(blob);
-                        reader.onloadend = function() {
-                            var base64data = reader.result;
-                            AndroidInterface.downloadBase64(base64data, blob.type);
-                        }
+                        reader.onloadend = function() { AndroidInterface.downloadBase64(reader.result, blob.type); }
                     }
                 };
                 xhr.send();
@@ -2050,10 +2693,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun downloadManually(
-        url: String, cookies: String, userAgent: String,
-        contentDisposition: String, mimetype: String, customFileName: String? = null
-    ) {
+    private fun downloadManually(url: String, cookies: String, userAgent: String, contentDisposition: String, mimetype: String, customFileName: String? = null) {
         val fileName = customFileName ?: sanitizeFileName(URLUtil.guessFileName(url, contentDisposition, mimetype))
         Toast.makeText(this, "⬇️ Manual download: $fileName", Toast.LENGTH_SHORT).show()
         Thread {
@@ -2065,11 +2705,8 @@ class MainActivity : AppCompatActivity() {
                 if (cookies.isNotEmpty()) connection.setRequestProperty("Cookie", cookies)
                 connection.setRequestProperty("Accept", "*/*")
                 connection.instanceFollowRedirects = true; connection.connect()
-                val responseCode = connection.responseCode
-                if (responseCode !in 200..299) {
-                    runOnUiThread { Toast.makeText(this, "Server error: HTTP $responseCode", Toast.LENGTH_LONG).show() }
-                    return@Thread
-                }
+                val code = connection.responseCode
+                if (code !in 200..299) { runOnUiThread { Toast.makeText(this, "Server error: HTTP $code", Toast.LENGTH_LONG).show() }; return@Thread }
                 inputStream = connection.inputStream
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val cv = ContentValues().apply {
@@ -2080,15 +2717,14 @@ class MainActivity : AppCompatActivity() {
                     }
                     val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
                     if (uri != null) {
-                        contentResolver.openOutputStream(uri)?.use { out -> inputStream.copyTo(out, bufferSize = 8192) }
-                        cv.clear(); cv.put(MediaStore.Downloads.IS_PENDING, 0)
-                        contentResolver.update(uri, cv, null, null)
+                        contentResolver.openOutputStream(uri)?.use { inputStream.copyTo(it, 8192) }
+                        cv.clear(); cv.put(MediaStore.Downloads.IS_PENDING, 0); contentResolver.update(uri, cv, null, null)
                         runOnUiThread { Toast.makeText(this, "✅ ডাউনলোড সম্পন্ন: $fileName", Toast.LENGTH_LONG).show() }
                     } else runOnUiThread { Toast.makeText(this, "Storage write failed", Toast.LENGTH_SHORT).show() }
                 } else {
                     val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                     destDir.mkdirs()
-                    FileOutputStream(File(destDir, fileName)).use { out -> inputStream.copyTo(out, bufferSize = 8192) }
+                    FileOutputStream(File(destDir, fileName)).use { inputStream.copyTo(it, 8192) }
                     runOnUiThread { Toast.makeText(this, "✅ ডাউনলোড সম্পন্ন: $fileName", Toast.LENGTH_LONG).show() }
                 }
             } catch (e: Exception) {
@@ -2110,13 +2746,12 @@ class MainActivity : AppCompatActivity() {
                 val cursor = dm.query(DownloadManager.Query().setFilterById(id))
                 if (cursor.moveToFirst()) {
                     val statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                    val status = if (statusCol >= 0) cursor.getInt(statusCol) else -1
-                    when (status) {
+                    when (if (statusCol >= 0) cursor.getInt(statusCol) else -1) {
                         DownloadManager.STATUS_SUCCESSFUL ->
                             Toast.makeText(this@MainActivity, "✅ ডাউনলোড সম্পন্ন: $fileName", Toast.LENGTH_LONG).show()
                         DownloadManager.STATUS_FAILED -> {
-                            val reasonCol = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
-                            val reason = if (reasonCol >= 0) cursor.getInt(reasonCol) else 0
+                            val rc = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
+                            val reason = if (rc >= 0) cursor.getInt(rc) else 0
                             Toast.makeText(this@MainActivity, "⚠️ ব্যর্থ (${downloadFailReason(reason)})", Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -2147,9 +2782,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun sanitizeFileName(name: String): String {
         val cleaned = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
-        return if (cleaned.length > 200) cleaned.substring(0, 200)
-               else cleaned.ifBlank { "download_${System.currentTimeMillis()}" }
+        return if (cleaned.length > 200) cleaned.substring(0, 200) else cleaned.ifBlank { "download_${System.currentTimeMillis()}" }
     }
+
+    // =====================================================================
+    // BACK BUTTON
+    // =====================================================================
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
@@ -2159,40 +2797,29 @@ class MainActivity : AppCompatActivity() {
                 if (chromeClient != null) chromeClient.onHideCustomView()
                 else {
                     customViewCallback?.onCustomViewHidden(); customViewCallback = null
-                    (window.decorView as FrameLayout).let { it.removeView(customView) }; customView = null
+                    (window.decorView as FrameLayout).removeView(customView); customView = null
                     tabLayout.visibility = View.VISIBLE; requestedOrientation = originalOrientation
                 }
             }
-            !isFileManagerActive -> {
+            activeSection == "browser" -> {
                 val canGoBack = try { webTabs.isNotEmpty() && webTabs[currentTabIndex].webView.canGoBack() } catch (e: Exception) { false }
                 if (canGoBack) webTabs[currentTabIndex].webView.goBack()
                 else @Suppress("DEPRECATION") super.onBackPressed()
             }
-            else -> {
+            activeSection == "files" -> {
                 try {
                     val storagePath = Environment.getExternalStorageDirectory().absolutePath
                     if (currentPath.absolutePath != storagePath) goUp()
                     else @Suppress("DEPRECATION") super.onBackPressed()
                 } catch (e: Exception) { @Suppress("DEPRECATION") super.onBackPressed() }
             }
+            else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
     }
 
-    override fun onDestroy() {
-        try {
-            saveState()
-            webTabs.forEach { try { it.webView.stopLoading(); it.webView.destroy() } catch (e: Exception) { } }
-            webTabs.clear()
-        } catch (e: Exception) { }
-        try { downloadReceiver?.let { unregisterReceiver(it) }; downloadReceiver = null } catch (e: Exception) { }
-        unregisterChatReceiver()
-        pipHideHandler?.removeCallbacks(pipHideRunnable ?: Runnable {})
-        super.onDestroy()
-    }
-
-    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
-        super.onConfigurationChanged(newConfig)
-    }
+    // =====================================================================
+    // STATE SAVE
+    // =====================================================================
 
     private fun saveState() {
         if (!isUIInitialized) return
@@ -2204,17 +2831,21 @@ class MainActivity : AppCompatActivity() {
                 putString(KEY_CURRENT_PATH, currentPath.absolutePath)
                 putStringSet(KEY_TAB_URLS, urls)
                 putInt(KEY_CURRENT_TAB, currentTabIndex)
-                putBoolean(KEY_IS_FILE_MANAGER, isFileManagerActive)
+                putBoolean(KEY_IS_FILE_MANAGER, activeSection == "files")
                 putBoolean(KEY_DESKTOP_MODE, globalDesktopMode)
                 apply()
             }
         } catch (e: Exception) { }
     }
 
+    // =====================================================================
+    // UI HELPERS
+    // =====================================================================
+
     private fun createTabButton(text: String, selected: Boolean, onClick: () -> Unit): TextView {
         return TextView(this).apply {
             this.text = text; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            typeface = Typeface.DEFAULT_BOLD; textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD; textSize = 12f
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             setBackgroundColor(if (selected) Color.parseColor("#333333") else Color.TRANSPARENT)
             setOnClickListener {
