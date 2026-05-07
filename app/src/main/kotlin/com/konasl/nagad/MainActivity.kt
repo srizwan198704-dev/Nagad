@@ -54,21 +54,29 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.zip.ZipInputStream
 
-// ==================== WHATSAPP NOTIFICATION LISTENER ====================
+// ==================== NOTIFICATION LISTENER (WhatsApp + Messenger) ====================
 
 class WhatsAppNotificationListener : NotificationListenerService() {
 
     companion object {
-        private val WHATSAPP_PACKAGES = setOf(
+        private val SUPPORTED_PACKAGES = setOf(
+            // WhatsApp variants
             "com.whatsapp",
             "com.whatsapp.w4b",
             "com.gbwhatsapp",
-            "com.whatsapp.business"
+            "com.whatsapp.business",
+            // Facebook Messenger variants
+            "com.facebook.orca",
+            "com.facebook.mlite",
+            "com.facebook.messenger.lite",
+            "org.telegram.messenger",
+            "org.telegram.messenger.web"
         )
 
-        const val ACTION_WHATSAPP_MESSAGE = "com.konasl.nagad.WHATSAPP_MESSAGE"
+        const val ACTION_CHAT_MESSAGE = "com.konasl.nagad.CHAT_MESSAGE"
         const val EXTRA_SENDER = "sender"
         const val EXTRA_MESSAGE = "message"
+        const val EXTRA_APP = "app"
 
         fun isEnabled(context: Context): Boolean {
             val flat = Settings.Secure.getString(
@@ -78,22 +86,29 @@ class WhatsAppNotificationListener : NotificationListenerService() {
             val cn = ComponentName(context, WhatsAppNotificationListener::class.java)
             return flat.contains(cn.flattenToString())
         }
+
+        fun getAppLabel(packageName: String): String = when {
+            packageName.startsWith("com.whatsapp") || packageName == "com.gbwhatsapp" -> "WhatsApp"
+            packageName.startsWith("com.facebook") -> "Messenger"
+            packageName.startsWith("org.telegram") -> "Telegram"
+            else -> "Message"
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn ?: return
-        if (sbn.packageName !in WHATSAPP_PACKAGES) return
+        if (sbn.packageName !in SUPPORTED_PACKAGES) return
 
         val extras = sbn.notification?.extras ?: return
-
-        val sender = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-        val message = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        val sender  = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+        val message = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()  ?: ""
 
         if (sender.isEmpty() && message.isEmpty()) return
 
-        val intent = Intent(ACTION_WHATSAPP_MESSAGE).apply {
+        val intent = Intent(ACTION_CHAT_MESSAGE).apply {
             putExtra(EXTRA_SENDER, sender)
             putExtra(EXTRA_MESSAGE, message)
+            putExtra(EXTRA_APP, getAppLabel(sbn.packageName))
             setPackage(packageName)
         }
         sendBroadcast(intent)
@@ -125,7 +140,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlBar: EditText
     private lateinit var progressBar: ProgressBar
     private lateinit var webContainer: FrameLayout
-    private var isDesktopMode = false
+
+    // Per-tab desktop mode (FIX: was global, now per-tab)
+    private var globalDesktopMode = false
 
     // Fullscreen Video
     private var customView: View? = null
@@ -144,19 +161,17 @@ class MainActivity : AppCompatActivity() {
     // Browser PiP
     private var browserPipWebView: WebView? = null
 
-    // ==================== APP-WIDE PiP MODE ====================
-    // When appPipModeEnabled = true, the entire app runs in PiP window
+    // App-wide PiP
     private var appPipModeEnabled = false
     private val KEY_APP_PIP_MODE = "app_pip_mode"
-    private val KEY_PIP_MODE_ASKED = "pip_mode_asked"
 
     // State Save
     private lateinit var prefs: SharedPreferences
-    private val KEY_CURRENT_PATH = "current_path"
-    private val KEY_TAB_URLS = "tab_urls"
-    private val KEY_CURRENT_TAB = "current_tab"
+    private val KEY_CURRENT_PATH   = "current_path"
+    private val KEY_TAB_URLS       = "tab_urls"
+    private val KEY_CURRENT_TAB    = "current_tab"
     private val KEY_IS_FILE_MANAGER = "is_file_manager"
-    private val KEY_DESKTOP_MODE = "desktop_mode"
+    private val KEY_DESKTOP_MODE   = "desktop_mode"
 
     // UI init flag
     private var isUIInitialized = false
@@ -165,13 +180,14 @@ class MainActivity : AppCompatActivity() {
     private val activeDownloads = mutableMapOf<Long, String>()
     private var downloadReceiver: BroadcastReceiver? = null
 
-    // WhatsApp notification receiver
-    private var whatsAppReceiver: BroadcastReceiver? = null
+    // Chat notification receiver (WhatsApp + Messenger)
+    private var chatReceiver: BroadcastReceiver? = null
 
     data class WebTab(
         val webView: WebView,
         var title: String = "New Tab",
-        var url: String = ""
+        var url: String = "",
+        var isDesktopMode: Boolean = false   // FIX: per-tab desktop mode
     )
 
     // File upload callback
@@ -201,8 +217,8 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) {
         if (WhatsAppNotificationListener.isEnabled(this)) {
-            Toast.makeText(this, "✅ WhatsApp নোটিফিকেশন অ্যাক্সেস চালু হয়েছে", Toast.LENGTH_SHORT).show()
-            registerWhatsAppReceiver()
+            Toast.makeText(this, "✅ নোটিফিকেশন অ্যাক্সেস চালু হয়েছে", Toast.LENGTH_SHORT).show()
+            registerChatReceiver()
         }
     }
 
@@ -212,10 +228,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         try { supportActionBar?.hide() } catch (e: Exception) { }
         prefs = getSharedPreferences("app_state", MODE_PRIVATE)
-        isDesktopMode = prefs.getBoolean(KEY_DESKTOP_MODE, false)
+        globalDesktopMode = prefs.getBoolean(KEY_DESKTOP_MODE, false)
         appPipModeEnabled = prefs.getBoolean(KEY_APP_PIP_MODE, false)
-
-        // Show PiP mode selection dialog every time app starts
         checkPermissionAndShowDialog()
     }
 
@@ -224,24 +238,19 @@ class MainActivity : AppCompatActivity() {
         if (!WhatsAppNotificationListener.isEnabled(this)) {
             requestNotificationAccess()
         } else {
-            registerWhatsAppReceiver()
+            registerChatReceiver()
         }
     }
 
     override fun onStop() {
         super.onStop()
-        unregisterWhatsAppReceiver()
+        unregisterChatReceiver()
     }
 
-    // ==================== APP-WIDE PiP MODE DIALOG ====================
+    // ==================== PiP MODE DIALOG ====================
 
-    /**
-     * Shows the PiP mode selection dialog on every app launch.
-     * Called after permission check is done.
-     */
     private fun showPipModeDialog() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            // PiP not supported, go straight to normal mode
             appPipModeEnabled = false
             initUI()
             return
@@ -253,37 +262,23 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(0), dp(8), dp(0), dp(8))
         }
 
-        // Header
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#16213E"))
             setPadding(dp(24), dp(20), dp(24), dp(20))
         }
-        val titleIcon = TextView(this).apply {
-            text = "📱"
-            textSize = 36f
-            gravity = Gravity.CENTER
-        }
+        val titleIcon = TextView(this).apply { text = "📱"; textSize = 36f; gravity = Gravity.CENTER }
         val titleText = TextView(this).apply {
-            text = "মোড নির্বাচন করুন"
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, dp(4))
+            text = "মোড নির্বাচন করুন"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(4))
         }
         val subtitleText = TextView(this).apply {
-            text = "অ্যাপটি কিভাবে চালাতে চান?"
-            textSize = 13f
-            setTextColor(Color.parseColor("#AAAACC"))
-            gravity = Gravity.CENTER
+            text = "অ্যাপটি কিভাবে চালাতে চান?"; textSize = 13f
+            setTextColor(Color.parseColor("#AAAACC")); gravity = Gravity.CENTER
         }
-        header.addView(titleIcon)
-        header.addView(titleText)
-        header.addView(subtitleText)
+        header.addView(titleIcon); header.addView(titleText); header.addView(subtitleText)
         dialogView.addView(header)
 
-        // Divider
         dialogView.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
             setBackgroundColor(Color.parseColor("#0F3460"))
@@ -295,36 +290,23 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#1A1A2E"))
         }
 
-        // Normal Mode Card
-        val normalCard = createModeCard(
-            icon = "🖥️",
-            title = "Normal Mode",
-            desc = "পূর্ণ স্ক্রিনে অ্যাপ চালান\nসব ফিচার সম্পূর্ণভাবে ব্যবহার করুন",
-            accentColor = "#4CAF50",
-            isSelected = !appPipModeEnabled
-        )
-
-        // PiP Mode Card
-        val pipCard = createModeCard(
-            icon = "⧉",
-            title = "PiP Mode (Picture-in-Picture)",
-            desc = "ছোট ভাসমান উইন্ডোতে অ্যাপ চালান\nঅন্য অ্যাপ ব্যবহারের সময়ও দেখা যাবে\n(Portrait ভিডিও সাইজে)",
-            accentColor = "#2196F3",
-            isSelected = appPipModeEnabled
-        )
+        val normalCard = createModeCard("🖥️", "Normal Mode",
+            "পূর্ণ স্ক্রিনে অ্যাপ চালান\nসব ফিচার সম্পূর্ণভাবে ব্যবহার করুন",
+            "#4CAF50", !appPipModeEnabled)
+        val pipCard = createModeCard("⧉", "PiP Mode (Picture-in-Picture)",
+            "ছোট ভাসমান উইন্ডোতে অ্যাপ চালান\nঅন্য অ্যাপ ব্যবহারের সময়ও দেখা যাবে",
+            "#2196F3", appPipModeEnabled)
 
         var selectedNormal = !appPipModeEnabled
-        var selectedPip = appPipModeEnabled
+        var selectedPip    = appPipModeEnabled
 
         fun updateCardSelection(pickNormal: Boolean) {
-            selectedNormal = pickNormal
-            selectedPip = !pickNormal
+            selectedNormal = pickNormal; selectedPip = !pickNormal
             updateCardVisual(normalCard, pickNormal, "#4CAF50")
             updateCardVisual(pipCard, !pickNormal, "#2196F3")
         }
-
         normalCard.setOnClickListener { updateCardSelection(true) }
-        pipCard.setOnClickListener { updateCardSelection(false) }
+        pipCard.setOnClickListener    { updateCardSelection(false) }
 
         optionsLayout.addView(normalCard)
         optionsLayout.addView(View(this).apply {
@@ -333,40 +315,25 @@ class MainActivity : AppCompatActivity() {
         optionsLayout.addView(pipCard)
         dialogView.addView(optionsLayout)
 
-        // Bottom note
         val noteText = TextView(this).apply {
-            text = "💡 পরের বার অ্যাপ খুললেও এই ডায়লগ দেখাবে"
-            textSize = 11f
-            setTextColor(Color.parseColor("#888AAA"))
-            gravity = Gravity.CENTER
+            text = "💡 পরের বার অ্যাপ খুললেও এই ডায়লগ দেখাবে"; textSize = 11f
+            setTextColor(Color.parseColor("#888AAA")); gravity = Gravity.CENTER
             setPadding(dp(16), 0, dp(16), dp(12))
             setBackgroundColor(Color.parseColor("#1A1A2E"))
         }
         dialogView.addView(noteText)
 
-        val dialog = AlertDialog.Builder(this)
-            .setView(dialogView)
-            .setCancelable(false)
-            .create()
-
+        val dialog = AlertDialog.Builder(this).setView(dialogView).setCancelable(false).create()
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
-            setLayout(
-                (resources.displayMetrics.widthPixels * 0.92).toInt(),
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            setLayout((resources.displayMetrics.widthPixels * 0.92).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
         }
 
-        // Confirm button — add after dialog created so we can dismiss it
         val confirmBtn = Button(this).apply {
-            text = "✓  শুরু করুন"
-            textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#6200EE"))
+            text = "✓  শুরু করুন"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#6200EE"))
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(48)
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
             ).apply { setMargins(dp(16), 0, dp(16), dp(16)) }
             setOnClickListener {
                 appPipModeEnabled = selectedPip
@@ -374,10 +341,7 @@ class MainActivity : AppCompatActivity() {
                 dialog.dismiss()
                 initUI()
                 if (appPipModeEnabled) {
-                    // Enter PiP mode after a short delay to let UI initialize
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        enterAppWidePip()
-                    }, 800)
+                    Handler(Looper.getMainLooper()).postDelayed({ enterAppWidePip() }, 800)
                 }
             }
         }
@@ -385,87 +349,48 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
         })
         optionsLayout.addView(confirmBtn)
-
         dialog.show()
     }
 
-    /**
-     * Creates a mode selection card view.
-     */
-    private fun createModeCard(
-        icon: String,
-        title: String,
-        desc: String,
-        accentColor: String,
-        isSelected: Boolean
-    ): LinearLayout {
+    private fun createModeCard(icon: String, title: String, desc: String, accentColor: String, isSelected: Boolean): LinearLayout {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            val bgColor = if (isSelected) Color.parseColor(accentColor + "33") else Color.parseColor("#0F3460")
-            setBackgroundColor(bgColor)
+            setBackgroundColor(if (isSelected) Color.parseColor(accentColor + "33") else Color.parseColor("#0F3460"))
             setPadding(dp(16), dp(14), dp(16), dp(14))
             gravity = Gravity.CENTER_VERTICAL
         }
-
         val iconView = TextView(this).apply {
-            text = icon
-            textSize = 28f
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
-                setMargins(0, 0, dp(14), 0)
-            }
+            text = icon; textSize = 28f; gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, 0, dp(14), 0) }
         }
-
         val textBlock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-
         val titleView = TextView(this).apply {
-            text = title
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
+            text = title; textSize = 14f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(if (isSelected) Color.parseColor(accentColor) else Color.WHITE)
         }
-
         val descView = TextView(this).apply {
-            text = desc
-            textSize = 11f
-            setTextColor(Color.parseColor("#AAAACC"))
-            setPadding(0, dp(4), 0, 0)
+            text = desc; textSize = 11f
+            setTextColor(Color.parseColor("#AAAACC")); setPadding(0, dp(4), 0, 0)
         }
-
         val checkView = TextView(this).apply {
-            text = if (isSelected) "✓" else ""
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor(accentColor))
-            gravity = Gravity.CENTER
+            text = if (isSelected) "✓" else ""; textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor(accentColor)); gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(dp(28), dp(28))
         }
-
-        textBlock.addView(titleView)
-        textBlock.addView(descView)
-        card.addView(iconView)
-        card.addView(textBlock)
-        card.addView(checkView)
-        card.tag = checkView // store reference to checkmark for update
-
+        textBlock.addView(titleView); textBlock.addView(descView)
+        card.addView(iconView); card.addView(textBlock); card.addView(checkView)
+        card.tag = checkView
         return card
     }
 
-    /**
-     * Updates card visual when selection changes.
-     */
     private fun updateCardVisual(card: LinearLayout, isSelected: Boolean, accentColor: String) {
-        card.setBackgroundColor(
-            if (isSelected) Color.parseColor(accentColor + "33") else Color.parseColor("#0F3460")
-        )
+        card.setBackgroundColor(if (isSelected) Color.parseColor(accentColor + "33") else Color.parseColor("#0F3460"))
         val checkView = card.tag as? TextView
         checkView?.text = if (isSelected) "✓" else ""
         checkView?.setTextColor(Color.parseColor(accentColor))
-
-        // Update title color
         for (i in 0 until card.childCount) {
             val child = card.getChildAt(i)
             if (child is LinearLayout) {
@@ -477,139 +402,121 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== APP-WIDE PiP ENTER ====================
+    // ==================== APP-WIDE PiP ====================
 
-    /**
-     * Enters PiP mode for the entire app.
-     * Uses portrait aspect ratio (9:16) to match phone screen portrait video size.
-     */
     private fun enterAppWidePip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show()
-            return
+            Toast.makeText(this, "PiP requires Android 8.0+", Toast.LENGTH_SHORT).show(); return
         }
         try {
             val builder = PictureInPictureParams.Builder()
-            // Portrait ratio like a phone screen (9:16)
             builder.setAspectRatio(Rational(9, 16))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setSeamlessResizeEnabled(true)
-                builder.setAutoEnterEnabled(false)
+                builder.setSeamlessResizeEnabled(true); builder.setAutoEnterEnabled(false)
             }
-            // Source hint: full root layout
-            val rect = Rect()
-            rootLayout.getGlobalVisibleRect(rect)
+            val rect = Rect(); rootLayout.getGlobalVisibleRect(rect)
             if (!rect.isEmpty) builder.setSourceRectHint(rect)
-
             enterPictureInPictureMode(builder.build())
         } catch (e: Exception) {
             Toast.makeText(this, "PiP error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // ==================== WHATSAPP NOTIFICATION SYSTEM ====================
+    // ==================== NOTIFICATION SYSTEM ====================
 
     private fun requestNotificationAccess() {
         AlertDialog.Builder(this)
-            .setTitle("📱 WhatsApp নোটিফিকেশন")
+            .setTitle("📱 Notification Access")
             .setMessage(
-                "WhatsApp মেসেজের Toast দেখাতে হলে Notification Access অনুমতি দিতে হবে।\n\n" +
+                "WhatsApp ও Messenger মেসেজের Toast দেখাতে হলে Notification Access অনুমতি দিতে হবে।\n\n" +
                 "Settings → Notification Access → এই অ্যাপ চালু করুন।"
             )
             .setPositiveButton("Settings খুলুন") { _, _ ->
                 try {
-                    notificationAccessLauncher.launch(
-                        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                    )
+                    notificationAccessLauncher.launch(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 } catch (e: Exception) {
                     Toast.makeText(this, "Settings খুলতে পারেনি", Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNegativeButton("এখন না", null)
-            .show()
+            .setNegativeButton("এখন না", null).show()
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
-    private fun registerWhatsAppReceiver() {
-        if (whatsAppReceiver != null) return
-
-        whatsAppReceiver = object : BroadcastReceiver() {
+    private fun registerChatReceiver() {
+        if (chatReceiver != null) return
+        chatReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 val sender  = intent?.getStringExtra(WhatsAppNotificationListener.EXTRA_SENDER)  ?: return
                 val message = intent.getStringExtra(WhatsAppNotificationListener.EXTRA_MESSAGE) ?: ""
-                showWhatsAppToast(sender, message)
+                val app     = intent.getStringExtra(WhatsAppNotificationListener.EXTRA_APP)    ?: "Message"
+                showChatToast(sender, message, app)
                 playSystemNotificationSound()
             }
         }
-
-        val filter = IntentFilter(WhatsAppNotificationListener.ACTION_WHATSAPP_MESSAGE)
+        val filter = IntentFilter(WhatsAppNotificationListener.ACTION_CHAT_MESSAGE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(whatsAppReceiver, filter, RECEIVER_NOT_EXPORTED)
+            registerReceiver(chatReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(whatsAppReceiver, filter)
+            registerReceiver(chatReceiver, filter)
         }
     }
 
-    private fun unregisterWhatsAppReceiver() {
-        try { whatsAppReceiver?.let { unregisterReceiver(it) } } catch (e: Exception) { }
-        whatsAppReceiver = null
+    private fun unregisterChatReceiver() {
+        try { chatReceiver?.let { unregisterReceiver(it) } } catch (e: Exception) { }
+        chatReceiver = null
     }
 
-    private fun showWhatsAppToast(sender: String, message: String) {
+    private fun showChatToast(sender: String, message: String, app: String) {
         runOnUiThread {
             try {
-                val context = this
+                val accentColor = when (app) {
+                    "WhatsApp"  -> "#25D366"
+                    "Messenger" -> "#0084FF"
+                    "Telegram"  -> "#2CA5E0"
+                    else        -> "#888888"
+                }
+                val appIcon = when (app) {
+                    "WhatsApp"  -> "💬"
+                    "Messenger" -> "💙"
+                    "Telegram"  -> "✈️"
+                    else        -> "📨"
+                }
 
-                val container = LinearLayout(context).apply {
+                val container = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     setBackgroundColor(Color.parseColor("#1A1A1A"))
                     setPadding(dp(14), dp(12), dp(14), dp(12))
                     gravity = Gravity.CENTER_VERTICAL
                 }
-
-                val accent = View(context).apply {
-                    layoutParams = LinearLayout.LayoutParams(dp(4), dp(48)).apply {
-                        setMargins(0, 0, dp(12), 0)
-                    }
-                    setBackgroundColor(Color.parseColor("#25D366"))
+                val accent = View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(4), dp(48)).apply { setMargins(0, 0, dp(12), 0) }
+                    setBackgroundColor(Color.parseColor(accentColor))
                 }
-
-                val textBlock = LinearLayout(context).apply {
+                val textBlock = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    )
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 }
-
-                val senderView = TextView(context).apply {
-                    text = "💬 $sender"
-                    setTextColor(Color.parseColor("#25D366"))
-                    textSize = 13f
-                    typeface = Typeface.DEFAULT_BOLD
+                val senderView = TextView(this).apply {
+                    text = "$appIcon $sender"
+                    setTextColor(Color.parseColor(accentColor))
+                    textSize = 13f; typeface = Typeface.DEFAULT_BOLD
                 }
-
-                val msgView = TextView(context).apply {
+                val msgView = TextView(this).apply {
                     text = if (message.length > 80) message.substring(0, 80) + "…" else message
-                    setTextColor(Color.WHITE)
-                    textSize = 12f
-                    maxLines = 2
+                    setTextColor(Color.WHITE); textSize = 12f; maxLines = 2
                 }
+                textBlock.addView(senderView); textBlock.addView(msgView)
+                container.addView(accent); container.addView(textBlock)
 
-                textBlock.addView(senderView)
-                textBlock.addView(msgView)
-                container.addView(accent)
-                container.addView(textBlock)
-
-                val toast = Toast(context)
+                val toast = Toast(this)
                 @Suppress("DEPRECATION")
                 toast.view = container
                 toast.duration = Toast.LENGTH_LONG
                 toast.setGravity(Gravity.TOP or Gravity.FILL_HORIZONTAL, 0, dp(8))
                 toast.show()
             } catch (e: Exception) {
-                Toast.makeText(this, "WhatsApp: $sender — $message", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "$app: $sender — $message", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -618,50 +525,37 @@ class MainActivity : AppCompatActivity() {
         try {
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             val ringtone = RingtoneManager.getRingtone(applicationContext, uri)
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val attrs = AudioAttributes.Builder()
+                ringtone.audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build()
-                ringtone.audioAttributes = attrs
             }
-
             ringtone.play()
         } catch (e: Exception) { }
     }
 
     // ==================== PERMISSION & INIT ====================
 
-    /**
-     * Checks storage permission first, then shows the PiP mode dialog.
-     */
     private fun checkPermissionAndShowDialog() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    storagePermissionLauncher.launch(intent)
+                    storagePermissionLauncher.launch(
+                        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                    )
                 } catch (e: Exception) { showPipModeDialog() }
-            } else { showPipModeDialog() }
+            } else showPipModeDialog()
         } else {
-            val readPerm  = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
-            val writePerm = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            if (readPerm != PackageManager.PERMISSION_GRANTED || writePerm != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                    100
-                )
-            } else { showPipModeDialog() }
+            val r = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+            val w = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            if (r != PackageManager.PERMISSION_GRANTED || w != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this,
+                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE), 100)
+            } else showPipModeDialog()
         }
-    }
-
-    // Keep original checkPermissionAndInit for back-compat (unused path now)
-    private fun checkPermissionAndInit() {
-        checkPermissionAndShowDialog()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -692,18 +586,12 @@ class MainActivity : AppCompatActivity() {
 
         val fileTab    = createTabButton("📁 Files",   true)  { switchToFileManager() }
         val browserTab = createTabButton("🌐 Browser", false) { switchToBrowser() }
-
-        // PiP mode indicator button in tab bar
-        val pipIndicatorBtn = createTabButton(
-            if (appPipModeEnabled) "⧉ PiP ON" else "",
-            false
-        ) {
+        val pipIndicatorBtn = createTabButton(if (appPipModeEnabled) "⧉ PiP ON" else "", false) {
             if (appPipModeEnabled) enterAppWidePip()
         }
         pipIndicatorBtn.visibility = if (appPipModeEnabled) View.VISIBLE else View.GONE
 
-        tabLayout.addView(fileTab)
-        tabLayout.addView(browserTab)
+        tabLayout.addView(fileTab); tabLayout.addView(browserTab)
         if (appPipModeEnabled) tabLayout.addView(pipIndicatorBtn)
 
         contentFrame = FrameLayout(this).apply {
@@ -717,7 +605,6 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.addView(tabLayout)
         rootLayout.addView(contentFrame)
-
         setContentView(rootLayout)
         restoreState()
     }
@@ -737,9 +624,8 @@ class MainActivity : AppCompatActivity() {
             if (!tabUrls.isNullOrEmpty()) tabUrls.forEach { url -> if (url.isNotEmpty()) addNewTab(url, switch = false) }
         } catch (e: Exception) { }
 
-        if (webTabs.isEmpty()) {
-            addNewTab("https://www.google.com", switch = true)
-        } else {
+        if (webTabs.isEmpty()) addNewTab("https://www.google.com", switch = true)
+        else {
             val savedIdx = prefs.getInt(KEY_CURRENT_TAB, 0)
             currentTabIndex = savedIdx.coerceIn(0, webTabs.size - 1)
             switchTab(currentTabIndex)
@@ -761,12 +647,16 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         saveState()
+        // FIX: Pause all webviews on pause
         webTabs.forEach { try { it.webView.onPause() } catch (e: Exception) { } }
     }
 
     override fun onResume() {
         super.onResume()
-        webTabs.forEach { try { it.webView.onResume() } catch (e: Exception) { } }
+        // FIX: Only resume the current tab's webview
+        webTabs.getOrNull(currentTabIndex)?.let {
+            try { it.webView.onResume() } catch (e: Exception) { }
+        }
         if (!isInPipMode) tabLayout.visibility = View.VISIBLE
     }
 
@@ -785,18 +675,10 @@ class MainActivity : AppCompatActivity() {
         } else {
             tabLayout.visibility = View.VISIBLE
             if (pipVideoView != null) pipControlOverlay?.visibility = View.VISIBLE
-
-            // If user exits PiP and app-wide PiP was enabled, ask if they want to stay in normal mode
-            if (appPipModeEnabled) {
-                showExitPipOptions()
-            }
+            if (appPipModeEnabled) showExitPipOptions()
         }
     }
 
-    /**
-     * When user pulls the app out of PiP window (restores to full screen),
-     * offer to re-enter PiP or switch to normal mode permanently.
-     */
     private fun showExitPipOptions() {
         AlertDialog.Builder(this)
             .setTitle("⧉ PiP Mode")
@@ -808,8 +690,7 @@ class MainActivity : AppCompatActivity() {
                 appPipModeEnabled = false
                 prefs.edit().putBoolean(KEY_APP_PIP_MODE, false).apply()
             }
-            .setCancelable(false)
-            .show()
+            .setCancelable(false).show()
     }
 
     private fun buildFilePipParams(videoView: VideoView): PictureInPictureParams? {
@@ -875,57 +756,28 @@ class MainActivity : AppCompatActivity() {
         val uri = try { Uri.parse(url) } catch (e: Exception) { return false }
         val scheme = uri.scheme?.lowercase() ?: return false
 
-        if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "data") {
-            return false
-        }
-
+        if (scheme == "http" || scheme == "https" || scheme == "about" || scheme == "data") return false
         if (scheme == "javascript") return true
-
-        if (scheme == "intent") {
-            return handleIntentScheme(url)
-        }
+        if (scheme == "intent") return handleIntentScheme(url)
 
         val launchIntent: Intent? = when (scheme) {
-            "market" -> {
-                try { Intent(Intent.ACTION_VIEW, uri) } catch (e: Exception) { null }
-            }
-            "tel" -> Intent(Intent.ACTION_DIAL, uri)
-            "mailto" -> Intent(Intent.ACTION_SENDTO, uri)
+            "market"    -> try { Intent(Intent.ACTION_VIEW, uri) } catch (e: Exception) { null }
+            "tel"       -> Intent(Intent.ACTION_DIAL, uri)
+            "mailto"    -> Intent(Intent.ACTION_SENDTO, uri)
             "sms", "smsto", "mms", "mmsto" -> Intent(Intent.ACTION_SENDTO, uri)
             "geo", "maps" -> Intent(Intent.ACTION_VIEW, uri)
-            "fb", "facebook" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.facebook.katana"
-            }
-            "instagram" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.instagram.android"
-            }
-            "twitter", "x" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.twitter.android"
-            }
-            "whatsapp" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.whatsapp"
-            }
-            "tg" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "org.telegram.messenger"
-            }
-            "youtube", "vnd.youtube" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.google.android.youtube"
-            }
-            "snssdk1128", "snssdk1233" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.zhiliaoapp.musically"
-            }
-            "snapchat" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.snapchat.android"
-            }
-            "linkedin" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.linkedin.android"
-            }
-            "spotify" -> Intent(Intent.ACTION_VIEW, uri).apply {
-                `package` = "com.spotify.music"
-            }
-            else -> Intent(Intent.ACTION_VIEW, uri)
+            "fb", "facebook" -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.facebook.katana" }
+            "instagram"  -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.instagram.android" }
+            "twitter", "x" -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.twitter.android" }
+            "whatsapp"   -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp" }
+            "tg"         -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "org.telegram.messenger" }
+            "youtube", "vnd.youtube" -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.google.android.youtube" }
+            "snssdk1128", "snssdk1233" -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.zhiliaoapp.musically" }
+            "snapchat"   -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.snapchat.android" }
+            "linkedin"   -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.linkedin.android" }
+            "spotify"    -> Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.spotify.music" }
+            else         -> Intent(Intent.ACTION_VIEW, uri)
         }
-
         return tryLaunchIntent(launchIntent, url, scheme)
     }
 
@@ -933,7 +785,6 @@ class MainActivity : AppCompatActivity() {
         return try {
             val intent = Intent.parseUri(intentUrl, Intent.URI_INTENT_SCHEME)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
             val pm = packageManager
             val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 pm.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))
@@ -941,69 +792,50 @@ class MainActivity : AppCompatActivity() {
                 @Suppress("DEPRECATION")
                 pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
             }
-
             if (resolved != null) {
-                startActivity(intent)
-                true
+                startActivity(intent); true
             } else {
                 val fallbackUrl = intent.getStringExtra("browser_fallback_url")
                 if (!fallbackUrl.isNullOrEmpty()) {
-                    (webTabs.getOrNull(currentTabIndex)?.webView ?: return true).loadUrl(fallbackUrl)
+                    webTabs.getOrNull(currentTabIndex)?.webView?.loadUrl(fallbackUrl)
                     return true
                 }
-
                 val pkg = intent.`package`
                 if (!pkg.isNullOrEmpty()) {
                     tryLaunchIntent(
                         Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$pkg")),
-                        intentUrl,
-                        "market"
+                        intentUrl, "market"
                     )
-                } else {
-                    true
-                }
+                } else true
             }
-        } catch (e: Exception) {
-            true
-        }
+        } catch (e: Exception) { true }
     }
 
     private fun tryLaunchIntent(intent: Intent?, originalUrl: String, scheme: String): Boolean {
         if (intent == null) return false
         return try {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-            true
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent); true
         } catch (e: android.content.ActivityNotFoundException) {
             val fallback = buildFallbackUrl(originalUrl, scheme)
-            if (fallback != null) {
-                webTabs.getOrNull(currentTabIndex)?.webView?.loadUrl(fallback)
-            } else {
-                Toast.makeText(this, "এই লিংক খোলার জন্য প্রয়োজনীয় অ্যাপ পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
-            }
+            if (fallback != null) webTabs.getOrNull(currentTabIndex)?.webView?.loadUrl(fallback)
+            else Toast.makeText(this, "প্রয়োজনীয় অ্যাপ পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
             true
         } catch (e: Exception) {
-            Toast.makeText(this, "লিংক খুলতে সমস্যা হয়েছে: ${e.message}", Toast.LENGTH_SHORT).show()
-            true
+            Toast.makeText(this, "লিংক খুলতে সমস্যা: ${e.message}", Toast.LENGTH_SHORT).show(); true
         }
     }
 
-    private fun buildFallbackUrl(originalUrl: String, scheme: String): String? {
-        return when (scheme) {
-            "market" -> {
-                val id = Uri.parse(originalUrl).getQueryParameter("id")
-                if (!id.isNullOrEmpty()) "https://play.google.com/store/apps/details?id=$id" else "https://play.google.com"
-            }
-            "fb", "facebook"  -> "https://www.facebook.com"
-            "instagram"       -> "https://www.instagram.com"
-            "twitter", "x"    -> "https://twitter.com"
-            "whatsapp"        -> "https://web.whatsapp.com"
-            "tg"              -> "https://web.telegram.org"
-            "youtube", "vnd.youtube" -> "https://www.youtube.com"
-            "linkedin"        -> "https://www.linkedin.com"
-            "spotify"         -> "https://open.spotify.com"
-            else              -> null
-        }
+    private fun buildFallbackUrl(originalUrl: String, scheme: String): String? = when (scheme) {
+        "market"   -> { val id = Uri.parse(originalUrl).getQueryParameter("id"); if (!id.isNullOrEmpty()) "https://play.google.com/store/apps/details?id=$id" else "https://play.google.com" }
+        "fb", "facebook"  -> "https://www.facebook.com"
+        "instagram"       -> "https://www.instagram.com"
+        "twitter", "x"    -> "https://twitter.com"
+        "whatsapp"        -> "https://web.whatsapp.com"
+        "tg"              -> "https://web.telegram.org"
+        "youtube", "vnd.youtube" -> "https://www.youtube.com"
+        "linkedin"        -> "https://www.linkedin.com"
+        "spotify"         -> "https://open.spotify.com"
+        else              -> null
     }
 
     // ==================== FILE MANAGER ====================
@@ -1013,45 +845,36 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
             setBackgroundColor(Color.WHITE)
             elevation = dp(2).toFloat()
         }
-
         val backBtn = Button(this).apply {
             text = "←"; textSize = 24f; setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { goUp() }
         }
-
         pathText = TextView(this).apply {
             text = "/"
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), 0, dp(8), 0)
-            ellipsize = android.text.TextUtils.TruncateAt.START
-            setSingleLine(true); textSize = 14f
+            gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), 0, dp(8), 0)
+            ellipsize = android.text.TextUtils.TruncateAt.START; setSingleLine(true); textSize = 14f
         }
-
         val newFolderBtn = Button(this).apply {
             text = "📁+"; textSize = 14f; setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { createNewFolder() }
         }
-
         topBar.addView(backBtn); topBar.addView(pathText); topBar.addView(newFolderBtn)
 
         storageInfo = TextView(this).apply {
             setPadding(dp(12), dp(4), dp(12), dp(4)); textSize = 11f
             setBackgroundColor(Color.parseColor("#E0E0E0"))
         }
-
         fileListView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
             divider = null
         }
-
         layout.addView(topBar); layout.addView(storageInfo); layout.addView(fileListView)
         return layout
     }
@@ -1101,7 +924,6 @@ class MainActivity : AppCompatActivity() {
                     return view
                 }
             }
-
             fileListView.adapter = adapter
             fileListView.setOnItemClickListener { _, _, position, _ ->
                 if (position >= files.size) return@setOnItemClickListener
@@ -1151,11 +973,11 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(file.name)
             .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
-                    "Delete"               -> deleteFile(file)
-                    "Rename"               -> renameFile(file)
-                    "PDF to JPG"           -> pdfToJpg(file)
-                    "Extract ZIP to DCIM"  -> extractZipToDcim(file)
-                    "Details"              -> showDetails(file)
+                    "Delete"              -> deleteFile(file)
+                    "Rename"              -> renameFile(file)
+                    "PDF to JPG"          -> pdfToJpg(file)
+                    "Extract ZIP to DCIM" -> extractZipToDcim(file)
+                    "Details"             -> showDetails(file)
                 }
             }.show()
     }
@@ -1219,7 +1041,7 @@ class MainActivity : AppCompatActivity() {
                     try {
                         val entryName = entry.name.replace("..", "_")
                         val outFile = File(destRoot, entryName)
-                        if (entry.isDirectory) { outFile.mkdirs() }
+                        if (entry.isDirectory) outFile.mkdirs()
                         else {
                             outFile.parentFile?.mkdirs()
                             FileOutputStream(outFile).use { fos -> zis.copyTo(fos, bufferSize = 8192) }
@@ -1228,9 +1050,7 @@ class MainActivity : AppCompatActivity() {
                             runOnUiThread { progressDialog.setMessage("$count files extracted…") }
                         }
                         zis.closeEntry()
-                    } catch (entryEx: Exception) {
-                        failed++; try { zis.closeEntry() } catch (_: Exception) {}
-                    }
+                    } catch (entryEx: Exception) { failed++; try { zis.closeEntry() } catch (_: Exception) {} }
                     entry = try { zis.nextEntry } catch (_: Exception) { null }
                 }
                 zis.close()
@@ -1266,12 +1086,10 @@ class MainActivity : AppCompatActivity() {
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             )
-
             val rootFrame = FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             }
-
             val videoView = VideoView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER)
                 setVideoPath(file.absolutePath)
@@ -1297,7 +1115,6 @@ class MainActivity : AppCompatActivity() {
             pipControlOverlay = controlOverlay
 
             val topControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-
             val playPauseBtn = Button(this).apply {
                 text = "⏸"; textSize = 20f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.WHITE)
                 setOnClickListener {
@@ -1306,7 +1123,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             pipPlayPauseBtn = playPauseBtn
-
             val seekBar = SeekBar(this).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
@@ -1318,7 +1134,6 @@ class MainActivity : AppCompatActivity() {
             val orientationControls = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(4))
             }
-
             fun makeCtrlBtn(label: String, color: String = "#333333", w: Int = 70, action: () -> Unit) =
                 Button(this).apply {
                     text = label; textSize = 12f
@@ -1328,23 +1143,19 @@ class MainActivity : AppCompatActivity() {
                     }
                     setOnClickListener { action() }
                 }
-
             orientationControls.addView(makeCtrlBtn("📱") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT })
             orientationControls.addView(makeCtrlBtn("🌍") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE })
             orientationControls.addView(makeCtrlBtn("🔄") { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR })
-
             val pipBtn = makeCtrlBtn("⧉ PiP", "#1565C0", 80) { enterFilePip(videoView) }.apply {
                 isEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 1f else 0.4f
             }
             orientationControls.addView(pipBtn)
-
             orientationControls.addView(makeCtrlBtn("✕", "#D32F2F", 60) {
                 try { videoView.stopPlayback() } catch (e: Exception) { }
                 pipVideoView = null; pipVideoDialog = null; pipControlOverlay = null; pipPlayPauseBtn = null
                 dialog.dismiss(); requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             })
-
             controlOverlay.addView(topControls); controlOverlay.addView(orientationControls)
             rootFrame.addView(controlOverlay)
 
@@ -1352,28 +1163,22 @@ class MainActivity : AppCompatActivity() {
             pipHideHandler = hideHandler
             val hideRunnable = Runnable { controlOverlay.visibility = View.GONE }
             pipHideRunnable = hideRunnable
-
             fun showControlsTemporarily() {
                 hideHandler.removeCallbacks(hideRunnable)
                 if (!isInPipMode) controlOverlay.visibility = View.VISIBLE
                 hideHandler.postDelayed(hideRunnable, 3000L)
             }
-
             rootFrame.setOnClickListener {
                 if (isInPipMode) return@setOnClickListener
                 if (controlOverlay.visibility == View.VISIBLE) {
                     hideHandler.removeCallbacks(hideRunnable); controlOverlay.visibility = View.GONE
                 } else showControlsTemporarily()
             }
-
             seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser) videoView.seekTo(progress)
-                }
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) { if (fromUser) videoView.seekTo(progress) }
                 override fun onStartTrackingTouch(sb: SeekBar?) { hideHandler.removeCallbacks(hideRunnable) }
                 override fun onStopTrackingTouch(sb: SeekBar?) { showControlsTemporarily() }
             })
-
             val timer = Timer()
             timer.schedule(object : TimerTask() {
                 override fun run() {
@@ -1381,16 +1186,12 @@ class MainActivity : AppCompatActivity() {
                         try {
                             if (videoView.isPlaying) {
                                 val current = videoView.currentPosition; val duration = videoView.duration
-                                if (duration > 0) {
-                                    seekBar.max = duration; seekBar.progress = current
-                                    timeText.text = "${formatTime(current)} / ${formatTime(duration)}"
-                                }
+                                if (duration > 0) { seekBar.max = duration; seekBar.progress = current; timeText.text = "${formatTime(current)} / ${formatTime(duration)}" }
                             }
                         } catch (e: Exception) { }
                     }
                 }
             }, 0, 1000)
-
             dialog.setOnDismissListener {
                 timer.cancel(); hideHandler.removeCallbacks(hideRunnable)
                 pipVideoView = null; pipVideoDialog = null; pipControlOverlay = null
@@ -1417,10 +1218,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val fileContent = file.readText()
             val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar_Fullscreen)
-            val layout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#FAFAFA"))
-            }
-
+            val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#FAFAFA")) }
             val topBar = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#2C2C2C"))
                 setPadding(dp(8), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER_VERTICAL
@@ -1435,7 +1233,6 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)); setPadding(0, 0, 0, 0)
                 setOnClickListener { dialog.dismiss() }
             }
-
             val searchBar = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#E8E8E8"))
                 setPadding(dp(8), dp(4), dp(8), dp(4)); gravity = Gravity.CENTER_VERTICAL
@@ -1448,18 +1245,14 @@ class MainActivity : AppCompatActivity() {
             val resultCount = TextView(this).apply {
                 text = ""; setTextColor(Color.parseColor("#666666")); textSize = 12f; setPadding(dp(8), 0, dp(8), 0)
             }
-
             topBar.addView(titleView); topBar.addView(closeTextButton)
             searchBar.addView(searchInput); searchBar.addView(resultCount)
-
             val infoBar = TextView(this).apply {
-                val lines = fileContent.lines().size
-                val words = fileContent.trim().split(Regex("\\s+")).size
+                val lines = fileContent.lines().size; val words = fileContent.trim().split(Regex("\\s+")).size
                 this.text = "  📄 ${getSize(file.length())}  |  $lines lines  |  $words words"
                 setTextColor(Color.parseColor("#666666")); textSize = 11f
                 setBackgroundColor(Color.parseColor("#E0E0E0")); setPadding(dp(8), dp(4), dp(8), dp(4))
             }
-
             val scrollView = ScrollView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
             }
@@ -1468,7 +1261,6 @@ class MainActivity : AppCompatActivity() {
                 textSize = 14f; setTextColor(Color.parseColor("#212121")); typeface = Typeface.MONOSPACE
             }
             scrollView.addView(textView)
-
             searchInput.addTextChangedListener(object : android.text.TextWatcher {
                 override fun afterTextChanged(s: android.text.Editable?) {
                     val query = s.toString().trim()
@@ -1476,10 +1268,8 @@ class MainActivity : AppCompatActivity() {
                     val spannable = android.text.SpannableString(fileContent)
                     var count = 0; var idx = fileContent.indexOf(query, ignoreCase = true)
                     while (idx != -1) {
-                        spannable.setSpan(
-                            android.text.style.BackgroundColorSpan(Color.parseColor("#FFEB3B")),
-                            idx, idx + query.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
+                        spannable.setSpan(android.text.style.BackgroundColorSpan(Color.parseColor("#FFEB3B")),
+                            idx, idx + query.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                         count++; idx = fileContent.indexOf(query, idx + 1, ignoreCase = true)
                     }
                     textView.text = spannable
@@ -1488,7 +1278,6 @@ class MainActivity : AppCompatActivity() {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             })
-
             layout.addView(topBar); layout.addView(searchBar); layout.addView(infoBar); layout.addView(scrollView)
             dialog.setContentView(layout); dialog.show()
         } catch (e: Exception) {
@@ -1507,9 +1296,7 @@ class MainActivity : AppCompatActivity() {
             }
             val rootFrame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
             val bitmap = loadBitmapSafe(file)
-            if (bitmap == null) {
-                Toast.makeText(this, "Cannot open image", Toast.LENGTH_SHORT).show(); return
-            }
+            if (bitmap == null) { Toast.makeText(this, "Cannot open image", Toast.LENGTH_SHORT).show(); return }
 
             val zoomMatrix = Matrix(); var zoomScale = 1f
             val imageView = ImageView(this).apply {
@@ -1546,13 +1333,11 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { dialog.dismiss() }
             }
             topOverlay.addView(infoText); topOverlay.addView(closeImageButton); rootFrame.addView(topOverlay)
-
             val hintText = TextView(this).apply {
                 text = "Pinch to zoom"; setTextColor(Color.parseColor("#AAFFFFFF")); textSize = 11f; gravity = Gravity.CENTER
                 setBackgroundColor(Color.parseColor("#88000000")); setPadding(dp(16), dp(6), dp(16), dp(6))
-                layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                    setMargins(0, 0, 0, dp(24))
-                }
+                layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { setMargins(0, 0, 0, dp(24)) }
             }
             rootFrame.addView(hintText); dialog.setContentView(rootFrame); dialog.show()
         } catch (e: Exception) {
@@ -1579,7 +1364,6 @@ class MainActivity : AppCompatActivity() {
             val renderer = PdfRenderer(pfd)
             val pageCount = renderer.pageCount
             if (pageCount == 0) { renderer.close(); Toast.makeText(this, "Empty PDF", Toast.LENGTH_SHORT).show(); return }
-
             val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
             val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val topBar = LinearLayout(this).apply {
@@ -1605,8 +1389,7 @@ class MainActivity : AppCompatActivity() {
                     val page = renderer.openPage(pageNum)
                     val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
                     page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    imageView.setImageBitmap(bmp)
-                    titleText.text = "${file.name} - ${pageNum + 1}/$pageCount"
+                    imageView.setImageBitmap(bmp); titleText.text = "${file.name} - ${pageNum + 1}/$pageCount"
                     page.close()
                 } catch (e: Exception) { Toast.makeText(this, "PDF render error", Toast.LENGTH_SHORT).show() }
             }
@@ -1645,7 +1428,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // ==================== BROWSER (with PiP) ====================
+    // ==================== BROWSER ====================
 
     private fun createBrowserView(): LinearLayout {
         val layout = LinearLayout(this).apply {
@@ -1663,7 +1446,6 @@ class MainActivity : AppCompatActivity() {
         }
         tabContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         tabScroll.addView(tabContainer)
-
         val newTabBtn = Button(this).apply {
             text = "+"; textSize = 18f; setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#444444"))
             setOnClickListener { addNewTab("https://www.google.com", switch = true) }
@@ -1679,17 +1461,20 @@ class MainActivity : AppCompatActivity() {
             setSingleLine(true)
             setOnEditorActionListener { _, _, _ -> loadUrlInCurrentTab(); true }
         }
-
         val goBtn = Button(this).apply { text = "Go"; setOnClickListener { loadUrlInCurrentTab() } }
 
+        // FIX: Desktop mode button now only affects current tab
         val desktopBtn = Button(this).apply {
-            text = if (isDesktopMode) "📱" else "💻"; textSize = 16f
+            text = "💻"; textSize = 16f
             setOnClickListener {
-                isDesktopMode = !isDesktopMode; text = if (isDesktopMode) "📱" else "💻"
-                Toast.makeText(this@MainActivity, if (isDesktopMode) "Desktop Mode ON" else "Desktop Mode OFF", Toast.LENGTH_SHORT).show()
-                webTabs.forEach { tab ->
-                    try { updateDesktopMode(tab.webView); tab.webView.reload() } catch (e: Exception) { }
-                }
+                val tab = webTabs.getOrNull(currentTabIndex) ?: return@setOnClickListener
+                tab.isDesktopMode = !tab.isDesktopMode
+                text = if (tab.isDesktopMode) "📱" else "💻"
+                Toast.makeText(this@MainActivity,
+                    if (tab.isDesktopMode) "Desktop Mode ON (this tab)" else "Desktop Mode OFF (this tab)",
+                    Toast.LENGTH_SHORT).show()
+                updateDesktopModeForTab(tab)
+                tab.webView.reload()
             }
         }
 
@@ -1707,9 +1492,9 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
             max = 100; visibility = View.GONE
         }
-
         urlLayout.addView(urlBarLayout); urlLayout.addView(progressBar)
 
+        // FIX: Use FrameLayout with visibility switching instead of remove/addView
         webContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
@@ -1749,11 +1534,12 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
-    private fun updateDesktopMode(webView: WebView) {
-        val userAgent = if (isDesktopMode)
+    // FIX: Per-tab desktop mode
+    private fun updateDesktopModeForTab(tab: WebTab) {
+        val userAgent = if (tab.isDesktopMode)
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         else WebSettings.getDefaultUserAgent(this)
-        try { webView.settings.userAgentString = userAgent } catch (e: Exception) { }
+        try { tab.webView.settings.userAgentString = userAgent } catch (e: Exception) { }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -1761,6 +1547,8 @@ class MainActivity : AppCompatActivity() {
         try {
             val webView = WebView(applicationContext).apply {
                 layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                // FIX: Start hidden, will be shown when switched to
+                visibility = View.GONE
             }
             webView.settings.apply {
                 javaScriptEnabled = true; domStorageEnabled = true; databaseEnabled = true
@@ -1771,49 +1559,45 @@ class MainActivity : AppCompatActivity() {
                 allowFileAccess = true; allowContentAccess = true
                 @Suppress("DEPRECATION") setSavePassword(true)
                 @Suppress("DEPRECATION") setSaveFormData(true)
+                // FIX: Enable JS dialogs support (needed for alert/confirm/prompt)
+                javaScriptCanOpenWindowsAutomatically = true
+                setSupportMultipleWindows(false)
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
             CookieManager.getInstance().setAcceptCookie(true)
-            updateDesktopMode(webView)
 
-            val tab = WebTab(webView, title = "Loading…", url = url)
+            val tab = WebTab(webView, title = "Loading…", url = url, isDesktopMode = false)
             webTabs.add(tab)
+            updateDesktopModeForTab(tab) // Apply default (mobile) UA
 
             webView.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                    val url = request.url.toString()
+                    val reqUrl = request.url.toString()
                     val scheme = request.url.scheme?.lowercase() ?: ""
-
                     if (scheme == "http" || scheme == "https" || scheme == "about") {
-                        view.loadUrl(url)
-                        return true
+                        view.loadUrl(reqUrl); return true
                     }
-
                     if (scheme == "data") return false
-
-                    return handleCustomScheme(view, url)
+                    return handleCustomScheme(view, reqUrl)
                 }
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     val idx = webTabs.indexOfFirst { it.webView == view }
-                    if (idx == currentTabIndex) {
-                        progressBar.visibility = View.VISIBLE; urlBar.setText(url)
-                    }
+                    if (idx == currentTabIndex) { progressBar.visibility = View.VISIBLE; urlBar.setText(url) }
                     if (idx != -1) webTabs[idx].url = url ?: ""
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     val idx = webTabs.indexOfFirst { it.webView == view }
-                    if (idx == currentTabIndex) {
-                        progressBar.visibility = View.GONE; urlBar.setText(url)
-                    }
+                    if (idx == currentTabIndex) { progressBar.visibility = View.GONE; urlBar.setText(url) }
                     if (idx != -1) webTabs[idx].url = url ?: ""
+                    // FIX: Inject long-click image save JS after page loads
+                    view?.let { injectImageLongClickSave(it) }
                 }
 
                 override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                     if (request?.isForMainFrame == true) {
-                        val errorCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-                            error?.errorCode ?: -1 else -1
+                        val errorCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) error?.errorCode ?: -1 else -1
                         if (errorCode == -10) return
                     }
                 }
@@ -1829,9 +1613,50 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onReceivedTitle(view: WebView?, title: String?) {
                     val index = webTabs.indexOfFirst { it.webView == view }
-                    if (index != -1 && !title.isNullOrEmpty()) {
-                        webTabs[index].title = title; updateTabTitles()
+                    if (index != -1 && !title.isNullOrEmpty()) { webTabs[index].title = title; updateTabTitles() }
+                }
+
+                // FIX: JS Alert dialog
+                override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                    runOnUiThread {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Alert")
+                            .setMessage(message)
+                            .setPositiveButton("OK") { _, _ -> result?.confirm() }
+                            .setCancelable(false)
+                            .show()
                     }
+                    return true
+                }
+
+                // FIX: JS Confirm dialog
+                override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                    runOnUiThread {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Confirm")
+                            .setMessage(message)
+                            .setPositiveButton("OK")     { _, _ -> result?.confirm() }
+                            .setNegativeButton("Cancel") { _, _ -> result?.cancel()  }
+                            .setCancelable(false)
+                            .show()
+                    }
+                    return true
+                }
+
+                // FIX: JS Prompt dialog
+                override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: JsPromptResult?): Boolean {
+                    runOnUiThread {
+                        val input = EditText(this@MainActivity).apply { setText(defaultValue) }
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Input")
+                            .setMessage(message)
+                            .setView(input)
+                            .setPositiveButton("OK")     { _, _ -> result?.confirm(input.text.toString()) }
+                            .setNegativeButton("Cancel") { _, _ -> result?.cancel() }
+                            .setCancelable(false)
+                            .show()
+                    }
+                    return true
                 }
 
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -1864,9 +1689,7 @@ class MainActivity : AppCompatActivity() {
                 ): Boolean {
                     fileUploadCallback?.onReceiveValue(null); fileUploadCallback = filePathCallback
                     fileChooserLauncher.launch(
-                        Intent(Intent.ACTION_GET_CONTENT).apply {
-                            addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
-                        }
+                        Intent(Intent.ACTION_GET_CONTENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }
                     )
                     return true
                 }
@@ -1875,6 +1698,9 @@ class MainActivity : AppCompatActivity() {
             webView.setDownloadListener { downloadUrl, userAgent, contentDisposition, mimetype, contentLength ->
                 handleDownload(downloadUrl, userAgent, contentDisposition, mimetype, contentLength, webView)
             }
+
+            // FIX: Add webview to container (hidden) so it renders in background
+            webContainer.addView(webView)
 
             val tabIndex = webTabs.size - 1
             val tabButton = Button(this).apply {
@@ -1896,20 +1722,57 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * FIX: Tab switching — use visibility instead of remove/addView.
+     * This keeps all WebViews in the hierarchy (preventing blank screens)
+     * while only showing the active one.
+     */
     private fun switchTab(index: Int) {
         if (index < 0 || index >= webTabs.size) return
-        currentTabIndex = index; webContainer.removeAllViews()
+
+        // Hide all webviews, pause non-current ones
+        webTabs.forEachIndexed { i, tab ->
+            if (i == index) {
+                tab.webView.visibility = View.VISIBLE
+                try { tab.webView.onResume() } catch (e: Exception) { }
+            } else {
+                tab.webView.visibility = View.GONE
+                try { tab.webView.onPause() } catch (e: Exception) { }
+            }
+        }
+
+        currentTabIndex = index
+        urlBar.setText(try { webTabs[index].webView.url ?: "" } catch (e: Exception) { "" })
+        progressBar.visibility = View.GONE
+        updateTabTitles()
+
+        // FIX: Update desktop mode button icon to reflect current tab's state
+        updateDesktopBtnIcon()
+    }
+
+    private fun updateDesktopBtnIcon() {
+        // Find the desktop mode button in the URL bar layout and update its icon
+        val tab = webTabs.getOrNull(currentTabIndex) ?: return
         try {
-            webContainer.addView(webTabs[index].webView)
-            urlBar.setText(try { webTabs[index].webView.url ?: "" } catch (e: Exception) { "" })
+            val urlBarLayout = (browserView.getChildAt(1) as? LinearLayout)?.getChildAt(0) as? LinearLayout ?: return
+            for (i in 0 until urlBarLayout.childCount) {
+                val child = urlBarLayout.getChildAt(i)
+                if (child is Button && (child.text == "💻" || child.text == "📱")) {
+                    child.text = if (tab.isDesktopMode) "📱" else "💻"
+                    break
+                }
+            }
         } catch (e: Exception) { }
-        progressBar.visibility = View.GONE; updateTabTitles()
     }
 
     private fun closeTab(index: Int): Boolean {
         if (index < 0 || index >= webTabs.size) return false
         if (webTabs.size <= 1) { Toast.makeText(this, "Cannot close last tab", Toast.LENGTH_SHORT).show(); return false }
-        try { webTabs[index].webView.stopLoading(); webTabs[index].webView.destroy() } catch (e: Exception) { }
+        try {
+            webTabs[index].webView.stopLoading()
+            webContainer.removeView(webTabs[index].webView)  // remove from container
+            webTabs[index].webView.destroy()
+        } catch (e: Exception) { }
         webTabs.removeAt(index)
         if (index < tabContainer.childCount) tabContainer.removeViewAt(index)
         currentTabIndex = currentTabIndex.coerceIn(0, webTabs.size - 1)
@@ -1936,6 +1799,87 @@ class MainActivity : AppCompatActivity() {
         }
         try { webTabs[currentTabIndex].webView.loadUrl(url) } catch (e: Exception) {
             Toast.makeText(this, "Failed to load URL", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // FIX: Image long-click save via JavaScript injection
+    private fun injectImageLongClickSave(webView: WebView) {
+        val js = """
+            (function() {
+                if (window._imgSaveInjected) return;
+                window._imgSaveInjected = true;
+                document.addEventListener('contextmenu', function(e) {
+                    var target = e.target;
+                    if (target && target.tagName === 'IMG') {
+                        var src = target.src || target.currentSrc || '';
+                        if (src && src.length > 0) {
+                            e.preventDefault();
+                            AndroidImageSave.onImageLongClick(src, target.alt || '');
+                        }
+                    }
+                }, true);
+                document.addEventListener('touchstart', function(e) {
+                    if (e.touches.length !== 1) return;
+                    var target = e.target;
+                    if (!target || target.tagName !== 'IMG') return;
+                    var src = target.src || target.currentSrc || '';
+                    if (!src) return;
+                    var timer = setTimeout(function() {
+                        AndroidImageSave.onImageLongClick(src, target.alt || '');
+                    }, 600);
+                    document.addEventListener('touchend', function cancel() {
+                        clearTimeout(timer);
+                        document.removeEventListener('touchend', cancel);
+                    });
+                    document.addEventListener('touchmove', function cancel2() {
+                        clearTimeout(timer);
+                        document.removeEventListener('touchmove', cancel2);
+                    });
+                }, true);
+            })();
+        """.trimIndent()
+
+        try { webView.removeJavascriptInterface("AndroidImageSave") } catch (e: Exception) { }
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun onImageLongClick(imageUrl: String, alt: String) {
+                runOnUiThread { showImageSaveDialog(imageUrl, webView) }
+            }
+        }, "AndroidImageSave")
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun showImageSaveDialog(imageUrl: String, webView: WebView) {
+        val options = arrayOf("💾 ছবি সেভ করুন", "🔗 লিংক কপি করুন", "🌐 নতুন ট্যাবে খুলুন")
+        AlertDialog.Builder(this)
+            .setTitle("ছবির অপশন")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> downloadImage(imageUrl, webView)
+                    1 -> {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Image URL", imageUrl))
+                        Toast.makeText(this, "লিংক কপি হয়েছে", Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> addNewTab(imageUrl, switch = true)
+                }
+            }
+            .setNegativeButton("বাতিল", null)
+            .show()
+    }
+
+    private fun downloadImage(imageUrl: String, webView: WebView) {
+        when {
+            imageUrl.startsWith("data:") -> downloadDataUrl(imageUrl)
+            imageUrl.startsWith("blob:")  -> downloadBlobUrl(imageUrl, webView)
+            else -> {
+                val cookies = CookieManager.getInstance().getCookie(imageUrl) ?: ""
+                val ua = try { webView.settings.userAgentString } catch (e: Exception) { "" }
+                val ext = imageUrl.substringAfterLast(".").substringBefore("?").lowercase()
+                    .takeIf { it.length in 2..5 } ?: "jpg"
+                val fileName = "image_${System.currentTimeMillis()}.$ext"
+                downloadManually(imageUrl, cookies, ua, "", "image/*", fileName)
+            }
         }
     }
 
@@ -1973,8 +1917,8 @@ class MainActivity : AppCompatActivity() {
         mimetype: String, contentLength: Long, webView: WebView
     ) {
         when {
-            url.startsWith("blob:")   -> downloadBlobUrl(url, webView)
-            url.startsWith("data:")   -> downloadDataUrl(url)
+            url.startsWith("blob:")  -> downloadBlobUrl(url, webView)
+            url.startsWith("data:")  -> downloadDataUrl(url)
             else -> downloadWithManager(url, userAgent, contentDisposition, mimetype, contentLength, webView)
         }
     }
@@ -2173,7 +2117,7 @@ class MainActivity : AppCompatActivity() {
                         DownloadManager.STATUS_FAILED -> {
                             val reasonCol = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
                             val reason = if (reasonCol >= 0) cursor.getInt(reasonCol) else 0
-                            Toast.makeText(this@MainActivity, "⚠️ DownloadManager ব্যর্থ (${downloadFailReason(reason)}), retry করছে...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "⚠️ ব্যর্থ (${downloadFailReason(reason)})", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -2241,7 +2185,7 @@ class MainActivity : AppCompatActivity() {
             webTabs.clear()
         } catch (e: Exception) { }
         try { downloadReceiver?.let { unregisterReceiver(it) }; downloadReceiver = null } catch (e: Exception) { }
-        unregisterWhatsAppReceiver()
+        unregisterChatReceiver()
         pipHideHandler?.removeCallbacks(pipHideRunnable ?: Runnable {})
         super.onDestroy()
     }
@@ -2261,7 +2205,7 @@ class MainActivity : AppCompatActivity() {
                 putStringSet(KEY_TAB_URLS, urls)
                 putInt(KEY_CURRENT_TAB, currentTabIndex)
                 putBoolean(KEY_IS_FILE_MANAGER, isFileManagerActive)
-                putBoolean(KEY_DESKTOP_MODE, isDesktopMode)
+                putBoolean(KEY_DESKTOP_MODE, globalDesktopMode)
                 apply()
             }
         } catch (e: Exception) { }
