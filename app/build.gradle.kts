@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.konasl.nagad"
-        minSdk = 24
+        minSdk = 19
         targetSdk = 35
         versionCode = 101
         versionName = "2.0.0"
