@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.konsal.nagad"
-    xmlns:tools="http://tools.android.com/tools">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- শুধু ইন্টারনেটের জন্য প্রয়োজনীয় পারমিশন -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -9,7 +8,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Youtube"
+        android:label="Nagad"
         android:theme="@style/Theme.AppCompat.Light.NoActionBar"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
