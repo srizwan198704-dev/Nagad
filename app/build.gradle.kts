@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.konasl.nagad"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
     }
@@ -38,6 +38,6 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.arthenica:ffmpeg-kit-full:6.0-2")
+    implementation("com.mrljdx:ffmpeg-kit-full:6.1.4")
     implementation("androidx.activity:activity-ktx:1.9.0")
 }
