@@ -5,42 +5,39 @@ plugins {
 
 android {
     namespace = "com.konasl.nagad"
-    compileSdk = 35 // Stable SDK 35 ব্যবহার করা ভালো
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.konasl.nagad"
-        minSdk = 19
-        targetSdk = 35
-        versionCode = 101
-        versionName = "2.0.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "1.8" }
-    
-    // Compose প্রয়োজন নেই তাই এগুলো ফলস করে দেওয়া হলো
-    buildFeatures { 
-        compose = false 
-        viewBinding = true
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildFeatures {
+        viewBinding = false
     }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-	implementation("androidx.webkit:webkit:1.11.0")
-    // এই লাইব্রেরিটি অত্যন্ত গুরুত্বপূর্ণ TabLayout ও BottomNav এর জন্য
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.arthenica:ffmpeg-kit-full:6.0-2")
+    implementation("androidx.activity:activity-ktx:1.9.0")
 }
