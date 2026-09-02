@@ -23,6 +23,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.Level
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.Statistics
 import java.io.File
@@ -37,9 +38,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var exportButton: Button
     private lateinit var selectButton: Button
+    private lateinit var viewLogButton: Button
 
     private var selectedVideoUri: Uri? = null
     private var inputFilePath: String? = null
+
+    // Holds full ffmpeg log output for the last run (success or fail)
+    private val ffmpegLogBuilder = StringBuilder()
 
     companion object {
         private const val PREFS_NAME = "crash_prefs"
@@ -83,30 +88,24 @@ class MainActivity : AppCompatActivity() {
                     append(sw.toString())
                 }
 
-                // Save to SharedPreferences so we can show + copy it after restart
                 getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_CRASH_LOG, fullLog)
                     .apply()
 
-                // Also save to a file in cache dir for easy retrieval/sharing
                 try {
                     val crashFile = File(cacheDir, "last_crash.txt")
                     crashFile.writeText(fullLog)
                 } catch (_: Exception) {
-                    // ignore secondary failure
                 }
 
-                // Try to copy directly to clipboard right now (works if app still has a window)
                 try {
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                     val clip = ClipData.newPlainText("Crash Log", fullLog)
                     clipboard?.setPrimaryClip(clip)
                 } catch (_: Exception) {
-                    // ignore, will offer copy button after restart
                 }
             } catch (_: Exception) {
-                // never let the crash handler itself crash
             } finally {
                 defaultHandler?.uncaughtException(thread, throwable)
             }
@@ -117,13 +116,12 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val crashLog = prefs.getString(KEY_CRASH_LOG, null)
         if (!crashLog.isNullOrEmpty()) {
-            showCrashDialog(crashLog)
-            // Clear it so it doesn't show again next launch
+            showTextDialog("App Crashed Last Time", crashLog)
             prefs.edit().remove(KEY_CRASH_LOG).apply()
         }
     }
 
-    private fun showCrashDialog(crashLog: String) {
+    private fun showTextDialog(title: String, content: String) {
         val scrollView = ScrollView(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -131,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val logText = TextView(this).apply {
-            text = crashLog
+            text = content
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(0, 0, 0, 24)
@@ -141,11 +139,11 @@ class MainActivity : AppCompatActivity() {
         scrollView.addView(container)
 
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("App Crashed Last Time")
+            .setTitle(title)
             .setView(scrollView)
             .setPositiveButton("Copy Log") { dialog, _ ->
-                copyToClipboard(crashLog)
-                Toast.makeText(this, "Crash log copied to clipboard", Toast.LENGTH_LONG).show()
+                copyToClipboard(content)
+                Toast.makeText(this, "Log copied to clipboard", Toast.LENGTH_LONG).show()
                 dialog.dismiss()
             }
             .setNegativeButton("Dismiss") { dialog, _ ->
@@ -157,11 +155,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun copyToClipboard(text: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        val clip = ClipData.newPlainText("Crash Log", text)
+        val clip = ClipData.newPlainText("FFmpeg Log", text)
         clipboard?.setPrimaryClip(clip)
     }
 
-    // ---------- Existing UI (unchanged) ----------
+    // ---------- Existing UI (unchanged, plus one new button) ----------
 
     private fun buildUi(): ViewGroup {
         val root = LinearLayout(this).apply {
@@ -212,15 +210,31 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
         }
 
-        // Debug helper: manually view/copy last crash log anytime
         val viewCrashLogButton = Button(this).apply {
             text = "View Last Crash Log"
             setOnClickListener {
                 val crashFile = File(cacheDir, "last_crash.txt")
                 if (crashFile.exists()) {
-                    showCrashDialog(crashFile.readText())
+                    showTextDialog("Last Crash Log", crashFile.readText())
                 } else {
                     Toast.makeText(this@MainActivity, "No crash log found", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        // NEW: view full FFmpeg export log (shows real reason for export failures)
+        viewLogButton = Button(this).apply {
+            text = "View Last Export Log"
+            setOnClickListener {
+                if (ffmpegLogBuilder.isNotEmpty()) {
+                    showTextDialog("Last Export Log", ffmpegLogBuilder.toString())
+                } else {
+                    val logFile = File(cacheDir, "last_export_log.txt")
+                    if (logFile.exists()) {
+                        showTextDialog("Last Export Log", logFile.readText())
+                    } else {
+                        Toast.makeText(this@MainActivity, "No export log found yet", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
@@ -232,6 +246,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(progressBar)
         root.addView(statusText)
         root.addView(viewCrashLogButton)
+        root.addView(viewLogButton)
 
         return root
     }
@@ -264,6 +279,7 @@ class MainActivity : AppCompatActivity() {
         selectButton.isEnabled = false
         statusText.text = "Preparing..."
         progressBar.progress = 0
+        ffmpegLogBuilder.clear()
 
         Thread {
             try {
@@ -280,6 +296,12 @@ class MainActivity : AppCompatActivity() {
 
                 runOnUiThread { statusText.text = "Exporting to 4K..." }
 
+                // Capture every line ffmpeg prints — this is where the REAL error shows up
+                FFmpegKitConfig.enableLogCallback { log ->
+                    val line = log.message ?: ""
+                    ffmpegLogBuilder.append(line).append("\n")
+                }
+
                 FFmpegKitConfig.enableStatisticsCallback { statistics: Statistics ->
                     val timeMs = statistics.time
                     runOnUiThread {
@@ -291,21 +313,29 @@ class MainActivity : AppCompatActivity() {
 
                 val session = FFmpegKit.execute(command)
 
+                // Always persist the log so it survives even if something crashes after this point
+                val logString = ffmpegLogBuilder.toString().ifBlank {
+                    session.allLogsAsString ?: "(no log output captured)"
+                }
+                try {
+                    File(cacheDir, "last_export_log.txt").writeText(
+                        "Command: $command\n\nReturn code: ${session.returnCode}\n\n$logString"
+                    )
+                } catch (_: Exception) {
+                }
+
                 runOnUiThread {
                     if (ReturnCode.isSuccess(session.returnCode)) {
                         saveToGallery(outputFile)
                         statusText.text = "Export complete! Saved to gallery."
                         progressBar.progress = 100
-                        Toast.makeText(
-                            this,
-                            "4K export successful",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        Toast.makeText(this, "4K export successful", Toast.LENGTH_LONG).show()
                     } else {
-                        statusText.text = "Export failed: ${session.failStackTrace ?: session.returnCode}"
+                        statusText.text = "Export failed (code ${session.returnCode}). Tap 'View Last Export Log' for details."
+                        copyToClipboard(logString)
                         Toast.makeText(
                             this,
-                            "Export failed",
+                            "Export failed — log copied to clipboard",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -313,8 +343,16 @@ class MainActivity : AppCompatActivity() {
                     selectButton.isEnabled = true
                 }
             } catch (e: Exception) {
+                val sw = StringWriter()
+                e.printStackTrace(PrintWriter(sw))
+                val errLog = sw.toString()
+                try {
+                    File(cacheDir, "last_export_log.txt").writeText(errLog)
+                } catch (_: Exception) {
+                }
                 runOnUiThread {
                     statusText.text = "Error: ${e.message}"
+                    copyToClipboard(errLog)
                     exportButton.isEnabled = true
                     selectButton.isEnabled = true
                 }
