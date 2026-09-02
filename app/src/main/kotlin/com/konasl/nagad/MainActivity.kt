@@ -159,7 +159,7 @@ class MainActivity : AppCompatActivity() {
         clipboard?.setPrimaryClip(clip)
     }
 
-    // ---------- Existing UI (unchanged, plus one new button) ----------
+    // ---------- Existing UI (unchanged) ----------
 
     private fun buildUi(): ViewGroup {
         val root = LinearLayout(this).apply {
@@ -222,7 +222,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // NEW: view full FFmpeg export log (shows real reason for export failures)
         viewLogButton = Button(this).apply {
             text = "View Last Export Log"
             setOnClickListener {
@@ -287,10 +286,14 @@ class MainActivity : AppCompatActivity() {
                 val outputFile = File(cacheDir, "output_4k_${System.currentTimeMillis()}.mp4")
                 val outputPath = outputFile.absolutePath
 
+                // NOTE: libx264 is NOT available in this ffmpeg-kit fork (LGPL-only build,
+                // confirmed via export log: "Unknown encoder 'libx264'").
+                // Using libopenh264 instead (software H.264 encoder, LGPL-safe).
+                // libopenh264 has no CRF support, so bitrate-based rate control is used instead.
                 val command = "-y -i \"$inputFilePath\" " +
                         "-vf \"scale=3840:2160:force_original_aspect_ratio=decrease," +
                         "pad=3840:2160:(ow-iw)/2:(oh-ih)/2\" " +
-                        "-c:v libx264 -preset medium -crf 18 " +
+                        "-c:v libopenh264 -b:v 25M -maxrate 30M -bufsize 40M " +
                         "-c:a aac -b:a 192k " +
                         "\"$outputPath\""
 
